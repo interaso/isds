@@ -56,6 +56,20 @@ async fn example() -> isds::Result<()> {
 
 `Environment::Production` must be selected explicitly. The client never follows redirects, never disables server certificate validation, and sends Basic credentials only to the fixed environment endpoints.
 
+## Examples
+
+The [`examples`](examples/) directory contains compile-checked consumer examples. Network-enabled examples read credentials from `ISDS_EXAMPLE_USERNAME` and `ISDS_EXAMPLE_PASSWORD`; use your shell or secret manager and never commit their values. They default to `Environment::Test`. Set `ISDS_EXAMPLE_ENVIRONMENT=production` only for intentional production use.
+
+| Example | Demonstrates | Command |
+| --- | --- | --- |
+| [lookup.rs](examples/lookup.rs) | State checks, exact lookup, typed databox types, criteria search | `cargo run --example lookup -- <databox-id> [firm-name]` |
+| [credit.rs](examples/credit.rs) | Owner information, current credit, seven-day history | `cargo run --example credit` |
+| [send_message.rs](examples/send_message.rs) | Files, metadata, automatic ordinary/large-message sending | `cargo run --example send_message -- <recipient-id> <file> [mime-type] [sender-reference]` |
+| [download_message.rs](examples/download_message.rs) | Automatic download, attachment metadata, delivery events | `cargo run --example download_message -- <message-id>` |
+| [inbox_worker.rs](examples/inbox_worker.rs) | Delivery-by-login, durable idempotent persistence, mark-read | Integration template; does not make network requests when run |
+
+Running a network example contacts the selected ISDS environment. Sending creates a real data message, and received-message listing can trigger legal delivery-by-login. Use test accounts and non-sensitive content. The download example deliberately leaves mark-read commented out until durable storage is in place.
+
 ## Supported operations
 
 | Rust method | ISDS operation | Endpoint |
@@ -135,6 +149,7 @@ The lifecycle sends fresh synthetic messages to both recipients and separately e
 
 ```text
 cargo fmt --check
+cargo check --examples
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo doc --no-deps

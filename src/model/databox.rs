@@ -62,6 +62,20 @@ impl TryFrom<&str> for DataBoxId {
     }
 }
 
+impl TryFrom<String> for DataBoxId {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl From<DataBoxId> for String {
+    fn from(id: DataBoxId) -> Self {
+        id.0
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for DataBoxId {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>

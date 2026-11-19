@@ -3,19 +3,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, EXPECT};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::{Error, Result};
 use crate::model::{
     CreditInfo, CreditQuery, DataBox, DataBoxId, DataBoxSearchResult, DataBoxState, DeliveryInfo,
-    Message, MessageId, MessageListQuery, MessagePage, OutgoingMessage, SentMessage,
+    Message, MessageEnvelopeDetails, MessageId, MessageListQuery, MessagePage, OutgoingMessage,
+    SentMessage,
 };
-use crate::wire::{credit, databox, message, message_download, message_info, soap};
+use crate::wire::{credit, databox, message, message_download, message_info, soap, vo_dz};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_MAX_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_BIG_MESSAGE_THRESHOLD_BYTES: u64 = 20 * 1024 * 1024;
+const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 
 /// ISDS deployment to which a client sends requests.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -31,6 +34,13 @@ impl Environment {
         match self {
             Self::Test => "https://ws1.datovka-test.gov.cz",
             Self::Production => "https://ws1.datovka.gov.cz",
+        }
+    }
+
+    fn vo_dz_base_url(self) -> &'static str {
+        match self {
+            Self::Test => "https://ws2.datovka-test.gov.cz",
+            Self::Production => "https://ws2.datovka.gov.cz",
         }
     }
 }
@@ -83,8 +93,11 @@ struct ClientInner {
     http: reqwest::Client,
     credentials: Credentials,
     base_url: String,
+    custom_base_url: bool,
     environment: Environment,
     max_response_bytes: usize,
+    big_message_threshold_bytes: u64,
+    max_attachment_bytes: u64,
 }
 
 impl fmt::Debug for Client {
@@ -94,6 +107,11 @@ impl fmt::Debug for Client {
             .field("environment", &self.inner.environment)
             .field("base_url", &self.inner.base_url)
             .field("max_response_bytes", &self.inner.max_response_bytes)
+            .field(
+                "big_message_threshold_bytes",
+                &self.inner.big_message_threshold_bytes,
+            )
+            .field("max_attachment_bytes", &self.inner.max_attachment_bytes)
             .field("credentials", &"[REDACTED]")
             .finish()
     }
@@ -106,6 +124,8 @@ pub struct ClientBuilder {
     connect_timeout: Duration,
     timeout: Duration,
     max_response_bytes: usize,
+    big_message_threshold_bytes: u64,
+    max_attachment_bytes: u64,
     #[cfg(test)]
     test_base_url: Option<String>,
 }
@@ -119,6 +139,8 @@ impl Client {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             timeout: DEFAULT_TIMEOUT,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            big_message_threshold_bytes: DEFAULT_BIG_MESSAGE_THRESHOLD_BYTES,
+            max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
             #[cfg(test)]
             test_base_url: None,
         }
@@ -196,18 +218,65 @@ impl Client {
         .await
     }
 
-    /// Sends one ordinary message using `CreateMessage`.
+    /// Sends one message, automatically selecting ordinary DZ or VoDZ transport.
     ///
-    /// Success confirms acceptance by ISDS, not delivery. This method never
-    /// retries automatically. A transport failure has an ambiguous outcome:
-    /// reconcile through sent-message queries before submitting the same content
-    /// again.
+    /// Messages whose decoded attachments exceed the configured threshold (20 MiB
+    /// by default) use VoDZ. Equality remains an ordinary message. The client
+    /// uploads each large-message attachment and then calls `CreateBigMessage`;
+    /// smaller messages use one `CreateMessage` call. The public arguments and
+    /// result are identical in both cases.
+    ///
+    /// Success confirms acceptance by ISDS, not delivery. No upload or creation
+    /// operation is retried automatically. A transport failure during final
+    /// creation has an ambiguous outcome: reconcile through sent-message queries
+    /// before submitting the same content again.
     pub async fn send_message(&self, message: &OutgoingMessage) -> Result<SentMessage> {
+        message::validate_outgoing(message)?;
+        let attachment_bytes = attachment_bytes(message)?;
+        if attachment_bytes > self.inner.max_attachment_bytes {
+            return Err(Error::invalid_input(
+                "attachments",
+                format!(
+                    "total attachment content exceeds the configured {}-byte maximum",
+                    self.inner.max_attachment_bytes
+                ),
+            ));
+        }
+        if use_big_message(attachment_bytes, self.inner.big_message_threshold_bytes) {
+            self.send_big_message(message).await
+        } else {
+            self.execute(
+                Service::MessageOperations,
+                message::create_message_request(message)?,
+                "CreateMessageResponse",
+                message::decode_create_message,
+            )
+            .await
+        }
+    }
+
+    async fn send_big_message(&self, message: &OutgoingMessage) -> Result<SentMessage> {
+        let mut uploaded = Vec::with_capacity(message.attachments.len());
+        for attachment in &message.attachments {
+            let result = self
+                .execute(
+                    Service::VoDzUpload,
+                    vo_dz::upload_attachment_request(attachment)?,
+                    "UploadAttachmentResponse",
+                    |response| vo_dz::decode_upload_attachment(response, attachment),
+                )
+                .await?;
+            uploaded.push(result);
+            // Let hyper finish releasing the upload connection before the next
+            // operation when running on tokio's current-thread runtime.
+            tokio::task::yield_now().await;
+        }
+
         self.execute(
-            Service::MessageOperations,
-            message::create_message_request(message)?,
-            "CreateMessageResponse",
-            message::decode_create_message,
+            Service::VoDz,
+            vo_dz::create_big_message_request(message, &uploaded)?,
+            "CreateBigMessageResponse",
+            vo_dz::decode_create_big_message,
         )
         .await
     }
@@ -259,6 +328,38 @@ impl Client {
         .await
     }
 
+    /// Downloads a received large-volume message using SOAP 1.2 `BigMessageDownload`.
+    ///
+    /// Use the `dmVODZ` flag from a message-list record or standalone envelope to
+    /// select this operation. Attachments are returned as inline binary or XML
+    /// content. No local cryptographic signature verification is performed.
+    pub async fn download_big_message(&self, id: &MessageId) -> Result<Message> {
+        self.execute(
+            Service::VoDz,
+            vo_dz::big_message_download_request(id)?,
+            "BigMessageDownloadResponse",
+            vo_dz::decode_big_message_download,
+        )
+        .await
+    }
+
+    /// Downloads a received-message envelope without attachment content.
+    ///
+    /// The result identifies ordinary versus VoDZ messages and includes the
+    /// attachment count when supplied by ISDS. It also works for erased messages.
+    pub async fn download_message_envelope(
+        &self,
+        id: &MessageId,
+    ) -> Result<MessageEnvelopeDetails> {
+        self.execute(
+            Service::MessageInfo,
+            message_info::envelope_download_request(id)?,
+            "MessageEnvelopeDownloadResponse",
+            message_info::decode_envelope_download,
+        )
+        .await
+    }
+
     /// Retrieves unsigned delivery information and ordered delivery events.
     ///
     /// This operation does not perform local signature or legal-validity verification.
@@ -294,8 +395,16 @@ impl Client {
         response_operation: &str,
         decode_response: impl FnOnce(roxmltree::Node<'_, '_>) -> Result<T>,
     ) -> Result<T> {
-        let url = format!("{}{}", self.inner.base_url, service.path());
-        let response = self
+        let base_url = if matches!(service, Service::VoDz | Service::VoDzUpload)
+            && !self.inner.custom_base_url
+        {
+            self.inner.environment.vo_dz_base_url()
+        } else {
+            self.inner.base_url.as_str()
+        };
+        let url = format!("{}{}", base_url, service.path());
+        let version = service.soap_version();
+        let mut http_request = self
             .inner
             .http
             .post(url)
@@ -303,12 +412,16 @@ impl Client {
                 &self.inner.credentials.username,
                 Some(self.inner.credentials.password.expose_secret()),
             )
-            .header(CONTENT_TYPE, "text/xml; charset=utf-8")
-            .header(ACCEPT, "text/xml")
-            .header("SOAPAction", "\"\"")
-            .body(request)
-            .send()
-            .await?;
+            .header(CONTENT_TYPE, version.content_type())
+            .header(ACCEPT, version.content_type())
+            .body(request);
+        if version == soap::SoapVersion::Soap11 {
+            http_request = http_request.header("SOAPAction", "\"\"");
+        }
+        if service.expect_continue() {
+            http_request = http_request.header(EXPECT, "100-continue");
+        }
+        let response = http_request.send().await?;
 
         let status = response.status();
         let body = read_bounded(response, self.inner.max_response_bytes).await?;
@@ -361,10 +474,29 @@ impl ClientBuilder {
 
     /// Sets the maximum buffered response size in bytes.
     ///
-    /// The default is 128 MiB. Ordinary SOAP attachments are base64 encoded, so
-    /// downloading them requires substantially more memory than their decoded size.
+    /// The default is 256 MiB. Ordinary and VoDZ attachments can be base64 encoded,
+    /// so downloading them requires substantially more memory than their decoded size.
     pub fn max_response_bytes(mut self, limit: usize) -> Self {
         self.max_response_bytes = limit;
+        self
+    }
+
+    /// Sets the nominal decoded-attachment threshold for automatic VoDZ selection.
+    ///
+    /// The default is 20 MiB. ISDS documents an overlapping, non-fixed boundary
+    /// around 20 MB, so this setting allows target-environment tuning. Equality
+    /// uses ordinary `CreateMessage`; only a larger total uses VoDZ.
+    pub fn big_message_threshold_bytes(mut self, threshold: u64) -> Self {
+        self.big_message_threshold_bytes = threshold;
+        self
+    }
+
+    /// Sets the maximum total decoded attachment content accepted for sending.
+    ///
+    /// The default is 100 MiB. ISDS applies this limit to attachment content, not
+    /// to the larger base64-encoded SOAP representation.
+    pub fn max_attachment_bytes(mut self, maximum: u64) -> Self {
+        self.max_attachment_bytes = maximum;
         self
     }
 
@@ -391,14 +523,33 @@ impl ClientBuilder {
                 "limit must be greater than zero",
             ));
         }
+        if self.big_message_threshold_bytes == 0 {
+            return Err(Error::invalid_input(
+                "big_message_threshold_bytes",
+                "threshold must be greater than zero",
+            ));
+        }
+        if self.max_attachment_bytes == 0 {
+            return Err(Error::invalid_input(
+                "max_attachment_bytes",
+                "maximum must be greater than zero",
+            ));
+        }
+        if self.big_message_threshold_bytes >= self.max_attachment_bytes {
+            return Err(Error::invalid_input(
+                "big_message_threshold_bytes",
+                "threshold must be smaller than the maximum attachment size",
+            ));
+        }
 
         #[cfg(test)]
-        let (base_url, https_only) = match self.test_base_url {
-            Some(url) => (url, false),
-            None => (self.environment.basic_base_url().to_owned(), true),
+        let (base_url, https_only, custom_base_url) = match self.test_base_url {
+            Some(url) => (url, false, true),
+            None => (self.environment.basic_base_url().to_owned(), true, false),
         };
         #[cfg(not(test))]
-        let (base_url, https_only) = (self.environment.basic_base_url().to_owned(), true);
+        let (base_url, https_only, custom_base_url) =
+            (self.environment.basic_base_url().to_owned(), true, false);
 
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -413,8 +564,11 @@ impl ClientBuilder {
                 http,
                 credentials,
                 base_url: base_url.trim_end_matches('/').to_owned(),
+                custom_base_url,
                 environment: self.environment,
                 max_response_bytes: self.max_response_bytes,
+                big_message_threshold_bytes: self.big_message_threshold_bytes,
+                max_attachment_bytes: self.max_attachment_bytes,
             }),
         })
     }
@@ -433,19 +587,53 @@ impl ClientBuilder {
 pub(crate) enum Service {
     MessageOperations,
     MessageInfo,
+    VoDz,
+    VoDzUpload,
     DataBoxSearch,
     DataBoxAccess,
 }
 
 impl Service {
+    fn soap_version(self) -> soap::SoapVersion {
+        match self {
+            Self::MessageOperations
+            | Self::MessageInfo
+            | Self::DataBoxSearch
+            | Self::DataBoxAccess => soap::SoapVersion::Soap11,
+            Self::VoDz | Self::VoDzUpload => soap::SoapVersion::Soap12,
+        }
+    }
+
+    fn expect_continue(self) -> bool {
+        matches!(self, Self::VoDzUpload)
+    }
+
     fn path(self) -> &'static str {
         match self {
             Self::MessageOperations => "/DS/dz",
             Self::MessageInfo => "/DS/dx",
+            Self::VoDz | Self::VoDzUpload => "/DS/vodz",
             Self::DataBoxSearch => "/DS/df",
             Self::DataBoxAccess => "/DS/DsManage",
         }
     }
+}
+
+fn attachment_bytes(message: &OutgoingMessage) -> Result<u64> {
+    message
+        .attachments
+        .iter()
+        .try_fold(0_u64, |total, attachment| {
+            total
+                .checked_add(attachment.content().len() as u64)
+                .ok_or_else(|| {
+                    Error::invalid_input("attachments", "total attachment size overflows u64")
+                })
+        })
+}
+
+fn use_big_message(total_attachment_bytes: u64, threshold: u64) -> bool {
+    total_attachment_bytes > threshold
 }
 
 async fn read_bounded(response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
@@ -788,6 +976,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_message_automatically_uploads_and_creates_a_big_message() {
+        let server = MockServer::start().await;
+        let outgoing = outgoing();
+        let upload_response = r#"<UploadAttachmentResponse xmlns="http://isds.czechpoint.cz/v20">
+          <dmAttID>upload-1</dmAttID>
+          <dmAttHash1 AttHashAlg="SHA-256">3d1f57c984978ef98a18378c8166c1cb8ede02c03eeb6aee7e2f121dfeee3e56</dmAttHash1>
+          <dmAttHash2 AttHashAlg="SHA3-256">9611923b9b1fe6ba837b2246b1e1a26ac51ecc2af6a2c662acb705fd2e8c4d4b</dmAttHash2>
+          <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+        </UploadAttachmentResponse>"#;
+        let uploaded = vo_dz::decode_upload_attachment(
+            roxmltree::Document::parse(upload_response)
+                .unwrap()
+                .root_element(),
+            &outgoing.attachments[0],
+        )
+        .unwrap();
+        let upload_response = format!(
+            r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"><env:Body>{upload_response}</env:Body></env:Envelope>"#
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/DS/vodz"))
+            .and(wiremock::matchers::header(
+                "content-type",
+                "application/soap+xml; charset=utf-8",
+            ))
+            .and(wiremock::matchers::header("expect", "100-continue"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(
+                    vo_dz::upload_attachment_request(&outgoing.attachments[0]).unwrap(),
+                )
+                .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(upload_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let create_response = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+          <env:Body><CreateBigMessageResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmID>00099</dmID><dmStatus><dmStatusCode>0000</dmStatusCode>
+            <dmStatusMessage>Accepted</dmStatusMessage></dmStatus>
+          </CreateBigMessageResponse></env:Body></env:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/vodz"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(
+                    vo_dz::create_big_message_request(&outgoing, &[uploaded]).unwrap(),
+                )
+                .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(create_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/DS/dz"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = ClientBuilder::test_at(Environment::Test, server.uri())
+            .big_message_threshold_bytes(1)
+            .max_attachment_bytes(1024)
+            .build()
+            .unwrap();
+        let sent = client.send_message(&outgoing).await.unwrap();
+        assert_eq!(sent.id.as_str(), "00099");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn oversized_message_is_rejected_before_any_upload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = ClientBuilder::test_at(Environment::Test, server.uri())
+            .big_message_threshold_bytes(1)
+            .max_attachment_bytes(2)
+            .build()
+            .unwrap();
+        let error = client.send_message(&outgoing()).await.unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidInput {
+                field: "attachments",
+                ..
+            }
+        ));
+        server.verify().await;
+    }
+
+    #[test]
+    fn big_message_threshold_uses_strictly_greater_than() {
+        assert!(!use_big_message(20 * 1024 * 1024 - 1, 20 * 1024 * 1024));
+        assert!(!use_big_message(20 * 1024 * 1024, 20 * 1024 * 1024));
+        assert!(use_big_message(20 * 1024 * 1024 + 1, 20 * 1024 * 1024));
+    }
+
+    #[tokio::test]
     async fn invalid_outgoing_message_is_not_sent() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -947,6 +1239,63 @@ mod tests {
             1
         );
         client.mark_message_downloaded(&message_id).await.unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn big_download_and_envelope_download_use_their_documented_services() {
+        let server = MockServer::start().await;
+        let client = Client::test_client(server.uri());
+        let id = MessageId::new("00042").unwrap();
+
+        let big_response = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+          <env:Body><BigMessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessage dmVODZ="true" attsNum="1"><dmDm><dmID>00042</dmID>
+              <dmSenderType>31</dmSenderType><dmFiles><dmFile dmMimeType="application/octet-stream"
+                dmFileMetaType="main" dmFileDescr="large.bin">
+                <dmEncodedContent>AAEC/f7/</dmEncodedContent></dmFile></dmFiles>
+            </dmDm><dmHash>AAEC/f7/</dmHash><dmQTimestamp></dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus></dmReturnedMessage>
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </BigMessageDownloadResponse></env:Body></env:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/vodz"))
+            .and(wiremock::matchers::header(
+                "content-type",
+                "application/soap+xml; charset=utf-8",
+            ))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(vo_dz::big_message_download_request(&id).unwrap()).unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(big_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let envelope_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MessageEnvelopeDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessageEnvelope dmVODZ="true" attsNum="1"><dmDm>
+              <dmID>00042</dmID><dmSenderType>31</dmSenderType></dmDm>
+              <dmHash>AAEC/f7/</dmHash><dmQTimestamp>BAU=</dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus></dmReturnedMessageEnvelope>
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </MessageEnvelopeDownloadResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dx"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_info::envelope_download_request(&id).unwrap()).unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(envelope_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let message = client.download_big_message(&id).await.unwrap();
+        assert_eq!(message.vodz, Some(true));
+        assert_eq!(message.attachments.len(), 1);
+        let envelope = client.download_message_envelope(&id).await.unwrap();
+        assert_eq!(envelope.vodz, Some(true));
+        assert_eq!(envelope.attachment_count, Some(1));
         server.verify().await;
     }
 

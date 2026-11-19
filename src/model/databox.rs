@@ -173,6 +173,11 @@ pub struct DataBoxSearchResult {
     pub boxes: Vec<DataBox>,
     /// Whether ISDS reported that additional results were truncated.
     pub truncated: bool,
+    /// Whether a found non-OVM box cannot receive the caller's postal data message.
+    ///
+    /// This corresponds to informational status `0009` and does not describe
+    /// general availability for ordinary data messages.
+    pub postal_delivery_restricted: bool,
 }
 
 /// State code returned by `CheckDataBox`.

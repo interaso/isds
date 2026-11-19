@@ -5,7 +5,30 @@ use roxmltree::{Document, Node, ParsingOptions};
 use crate::error::{Error, Result, ServiceError};
 
 pub(crate) const ISDS_NS: &str = "http://isds.czechpoint.cz/v20";
-const SOAP_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+const SOAP_11_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+const SOAP_12_NS: &str = "http://www.w3.org/2003/05/soap-envelope";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SoapVersion {
+    Soap11,
+    Soap12,
+}
+
+impl SoapVersion {
+    fn namespace(self) -> &'static str {
+        match self {
+            Self::Soap11 => SOAP_11_NS,
+            Self::Soap12 => SOAP_12_NS,
+        }
+    }
+
+    pub(crate) fn content_type(self) -> &'static str {
+        match self {
+            Self::Soap11 => "text/xml; charset=utf-8",
+            Self::Soap12 => "application/soap+xml; charset=utf-8",
+        }
+    }
+}
 
 pub(crate) type XmlResult = std::result::Result<(), quick_xml::Error>;
 
@@ -13,8 +36,16 @@ pub(crate) fn request(
     operation: &str,
     write_operation: impl FnOnce(&mut Writer<Vec<u8>>) -> XmlResult,
 ) -> Result<Vec<u8>> {
+    request_with_version(SoapVersion::Soap11, operation, write_operation)
+}
+
+pub(crate) fn request_with_version(
+    version: SoapVersion,
+    operation: &str,
+    write_operation: impl FnOnce(&mut Writer<Vec<u8>>) -> XmlResult,
+) -> Result<Vec<u8>> {
     let mut writer = Writer::new(Vec::new());
-    write_envelope(&mut writer, operation, write_operation).map_err(|error| {
+    write_envelope(&mut writer, version, operation, write_operation).map_err(|error| {
         Error::invalid_input("xml", format!("could not encode request: {error}"))
     })?;
     Ok(writer.into_inner())
@@ -22,13 +53,14 @@ pub(crate) fn request(
 
 fn write_envelope(
     writer: &mut Writer<Vec<u8>>,
+    version: SoapVersion,
     operation: &str,
     write_operation: impl FnOnce(&mut Writer<Vec<u8>>) -> XmlResult,
 ) -> XmlResult {
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
     let mut envelope = BytesStart::new("soap:Envelope");
-    envelope.push_attribute(("xmlns:soap", SOAP_NS));
+    envelope.push_attribute(("xmlns:soap", version.namespace()));
     envelope.push_attribute(("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance"));
     writer.write_event(Event::Start(envelope))?;
     writer.write_event(Event::Start(BytesStart::new("soap:Body")))?;
@@ -138,13 +170,26 @@ pub(crate) fn decode<T>(
         .map_err(|error| Error::invalid_response(format!("malformed XML: {error}")))?;
 
     let envelope = document.root_element();
-    require_tag(envelope, SOAP_NS, "Envelope")?;
-    let body = child(envelope, SOAP_NS, "Body")
+    let version = match envelope.tag_name().namespace() {
+        Some(SOAP_11_NS) => SoapVersion::Soap11,
+        Some(SOAP_12_NS) => SoapVersion::Soap12,
+        _ => {
+            return Err(Error::invalid_response(
+                "unsupported SOAP envelope namespace",
+            ));
+        }
+    };
+    require_tag(envelope, version.namespace(), "Envelope")?;
+    let body = child(envelope, version.namespace(), "Body")
         .ok_or_else(|| Error::invalid_response("SOAP Body is missing"))?;
 
-    if let Some(fault) = child(body, SOAP_NS, "Fault") {
-        let code = descendant_text(fault, "faultcode").unwrap_or("unknown");
-        let message = descendant_text(fault, "faultstring").unwrap_or("unspecified SOAP fault");
+    if let Some(fault) = child(body, version.namespace(), "Fault") {
+        let (code_name, message_name) = match version {
+            SoapVersion::Soap11 => ("faultcode", "faultstring"),
+            SoapVersion::Soap12 => ("Value", "Text"),
+        };
+        let code = descendant_text(fault, code_name).unwrap_or("unknown");
+        let message = descendant_text(fault, message_name).unwrap_or("unspecified SOAP fault");
         return Err(Error::SoapFault {
             code: code.to_owned(),
             message: message.to_owned(),
@@ -276,5 +321,24 @@ mod tests {
             </soap:Envelope>"#;
         let error = decode(xml, "CheckDataBoxResponse", |_| Ok(())).unwrap_err();
         assert!(matches!(error, Error::InvalidResponse { .. }));
+    }
+
+    #[test]
+    fn soap_12_uses_its_own_envelope_and_fault_shape() {
+        let request =
+            request_with_version(SoapVersion::Soap12, "CreateBigMessage", |_| Ok(())).unwrap();
+        let xml = String::from_utf8(request).unwrap();
+        assert!(xml.contains("xmlns:soap=\"http://www.w3.org/2003/05/soap-envelope\""));
+
+        let fault = br#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+          <env:Body><env:Fault><env:Code><env:Value>env:Receiver</env:Value></env:Code>
+            <env:Reason><env:Text xml:lang="en">Temporary failure</env:Text></env:Reason>
+          </env:Fault></env:Body></env:Envelope>"#;
+        let error = decode(fault, "CreateBigMessageResponse", |_| Ok(())).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::SoapFault { ref code, ref message }
+                if code == "env:Receiver" && message == "Temporary failure"
+        ));
     }
 }

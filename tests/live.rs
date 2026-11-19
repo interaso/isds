@@ -10,7 +10,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use isds::{
     Attachment, Client, Credentials, CreditQuery, DataBoxId, Environment, Error, Message,
-    MessageId, MessageListQuery, MessageState, OutgoingMessage,
+    MessageId, MessageListQuery, MessageRecord, MessageState, OutgoingMessage,
 };
 use jiff::{Span, Timestamp};
 use uuid::Uuid;
@@ -29,7 +29,7 @@ impl Identity {
         let box_id = required_env(&format!("{prefix}_BOX_ID"))?.parse()?;
         let client = Client::builder(Environment::Test)
             .credentials(Credentials::new(username, password))
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300))
             .build()?;
         Ok(Self { client, box_id })
     }
@@ -168,8 +168,54 @@ async fn sends_downloads_and_marks_messages_for_both_recipients() -> LiveResult 
 
         let delivery = recipient.client.delivery_info(&sent.id).await?;
         assert_eq!(delivery.envelope.id, sent.id);
+        let envelope = recipient.client.download_message_envelope(&sent.id).await?;
+        assert_eq!(envelope.envelope.id, sent.id);
+        assert_ne!(envelope.vodz, Some(true));
         recipient.client.mark_message_downloaded(&sent.id).await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "uploads a message over 20 MiB; requires explicit ISDS test-environment opt-in"]
+async fn automatically_sends_and_downloads_a_large_message() -> LiveResult {
+    if !enabled()? {
+        eprintln!(
+            "skipping live VoDZ test: set ISDS_RUN_LIVE_TESTS=1 and the credentials variables"
+        );
+        return Ok(());
+    }
+    let [sender, recipient, _] = identities()?;
+    let started = Timestamp::now().checked_sub(Span::new().minutes(5))?;
+    let correlation = Uuid::new_v4();
+    let expected_content = Bytes::from(vec![b'x'; 20 * 1024 * 1024 + 1]);
+    let outgoing = OutgoingMessage::new(
+        recipient.box_id.clone(),
+        format!("ISDS Rust automatic VoDZ test {correlation}"),
+    )
+    .with_attachment(Attachment::main(
+        "large.txt",
+        mime::TEXT_PLAIN,
+        expected_content.clone(),
+    ));
+
+    let sent = sender.client.send_message(&outgoing).await?;
+    let sent_record = wait_for_sent(&sender, &sent.id, started).await?;
+    assert_eq!(sent_record.vodz, Some(true));
+
+    let downloaded = download_when_ready(&recipient, &sent.id, started).await?;
+    assert_eq!(downloaded.vodz, Some(true));
+    assert_eq!(downloaded.attachment_count, Some(1));
+    assert_eq!(downloaded.attachments.len(), 1);
+    assert_eq!(downloaded.attachments[0].content(), &expected_content);
+
+    let envelope = recipient.client.download_message_envelope(&sent.id).await?;
+    assert_eq!(envelope.envelope.id, sent.id);
+    assert_eq!(envelope.vodz, Some(true));
+    assert_eq!(envelope.attachment_count, Some(1));
+    let delivery = recipient.client.delivery_info(&sent.id).await?;
+    assert_eq!(delivery.envelope.id, sent.id);
+    recipient.client.mark_message_downloaded(&sent.id).await?;
     Ok(())
 }
 
@@ -177,7 +223,7 @@ async fn wait_for_sent(
     sender: &Identity,
     id: &MessageId,
     started: Timestamp,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<MessageRecord, Box<dyn std::error::Error>> {
     let query = MessageListQuery {
         from: Some(started),
         limit: 100,
@@ -185,8 +231,8 @@ async fn wait_for_sent(
     };
     for _ in 0..15 {
         let page = sender.client.list_sent_messages(&query).await?;
-        if page.records.iter().any(|record| &record.envelope.id == id) {
-            return Ok(());
+        if let Some(record) = page.records.iter().find(|record| &record.envelope.id == id) {
+            return Ok(record.clone());
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -224,7 +270,12 @@ async fn download_when_ready(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                match recipient.client.download_received_message(id).await {
+                let result = if record.vodz == Some(true) {
+                    recipient.client.download_big_message(id).await
+                } else {
+                    recipient.client.download_received_message(id).await
+                };
+                match result {
                     Ok(message) => return Ok(message),
                     Err(Error::Service(service)) if service.code() == "1222" => {}
                     Err(error) => return Err(error.into()),

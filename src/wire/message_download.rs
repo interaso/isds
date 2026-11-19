@@ -37,6 +37,14 @@ pub(crate) fn decode_download(response: Node<'_, '_>) -> Result<Message> {
         .attribute("specMessFlag")
         .map(|value| soap::parse(value, "specMessFlag"))
         .transpose()?;
+    let vodz = returned
+        .attribute("dmVODZ")
+        .map(|value| soap::parse_bool(value, "dmVODZ"))
+        .transpose()?;
+    let attachment_count = returned
+        .attribute("attsNum")
+        .map(|value| soap::parse(value, "attsNum"))
+        .transpose()?;
 
     Ok(Message {
         envelope,
@@ -49,6 +57,8 @@ pub(crate) fn decode_download(response: Node<'_, '_>) -> Result<Message> {
         attachment_size,
         message_type,
         special_message_flag,
+        vodz,
+        attachment_count,
     })
 }
 

@@ -43,12 +43,13 @@ pub(crate) fn find_data_boxes_request(query: &DataBox) -> Result<Vec<u8>> {
 
 pub(crate) fn decode_find_data_boxes(response: Node<'_, '_>) -> Result<DataBoxSearchResult> {
     let status = soap::status(response, "db")?;
-    let truncated = match status.code.as_str() {
-        "0000" => false,
+    let (truncated, postal_delivery_restricted) = match status.code.as_str() {
+        "0000" => (false, false),
         "0002" => {
             return Ok(DataBoxSearchResult::default());
         }
-        "0003" => true,
+        "0003" => (true, false),
+        "0009" => (false, true),
         _ => return Err(status.into_error()),
     };
 
@@ -58,7 +59,11 @@ pub(crate) fn decode_find_data_boxes(response: Node<'_, '_>) -> Result<DataBoxSe
             boxes.push(parse_data_box(owner)?);
         }
     }
-    Ok(DataBoxSearchResult { boxes, truncated })
+    Ok(DataBoxSearchResult {
+        boxes,
+        truncated,
+        postal_delivery_restricted,
+    })
 }
 
 fn write_data_box(writer: &mut Writer<Vec<u8>>, data: &DataBox) -> soap::XmlResult {
@@ -258,6 +263,15 @@ mod tests {
         let result = soap::decode(empty, "FindDataBox2Response", decode_find_data_boxes).unwrap();
         assert!(result.boxes.is_empty());
         assert!(!result.truncated);
+
+        let restricted = br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><FindDataBox2Response xmlns="http://isds.czechpoint.cz/v20">
+            <dbStatus><dbStatusCode>0009</dbStatusCode><dbStatusMessage>PDZ restricted</dbStatusMessage></dbStatus>
+          </FindDataBox2Response></soap:Body></soap:Envelope>"#;
+        let result =
+            soap::decode(restricted, "FindDataBox2Response", decode_find_data_boxes).unwrap();
+        assert!(result.boxes.is_empty());
+        assert!(result.postal_delivery_restricted);
 
         let failed = br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
           <soap:Body><FindDataBox2Response xmlns="http://isds.czechpoint.cz/v20">

@@ -12,7 +12,7 @@ pub use error::{Error, Result, ServiceError};
 pub use model::{
     Attachment, AttachmentType, CreditEvent, CreditEventDetails, CreditInfo, CreditQuery, DataBox,
     DataBoxId, DataBoxSearchResult, DataBoxState, DataBoxType, DataVaultChange, DeliveryEvent,
-    DeliveryInfo, Message, MessageEnvelope, MessageHash, MessageId, MessageListQuery,
-    MessageMetadata, MessagePage, MessageRecord, MessageState, OutgoingMessage, PublishOwnId,
-    SentMessage,
+    DeliveryInfo, Message, MessageEnvelope, MessageEnvelopeDetails, MessageHash, MessageId,
+    MessageListQuery, MessageMetadata, MessagePage, MessageRecord, MessageState, OutgoingMessage,
+    PublishOwnId, SentMessage,
 };

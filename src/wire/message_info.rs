@@ -2,7 +2,8 @@ use roxmltree::Node;
 
 use crate::error::{Error, Result};
 use crate::model::{
-    DeliveryEvent, DeliveryInfo, MessageId, MessageListQuery, MessagePage, MessageRecord,
+    DeliveryEvent, DeliveryInfo, MessageEnvelopeDetails, MessageId, MessageListQuery, MessagePage,
+    MessageRecord,
 };
 use crate::wire::message_common;
 use crate::wire::soap::{self, ISDS_NS};
@@ -118,6 +119,60 @@ pub(crate) fn decode_delivery_info(response: Node<'_, '_>) -> Result<DeliveryInf
         acceptance_time,
         state,
         events,
+    })
+}
+
+pub(crate) fn envelope_download_request(id: &MessageId) -> Result<Vec<u8>> {
+    soap::request("MessageEnvelopeDownload", |writer| {
+        soap::text_element(writer, "dmID", id.as_str())
+    })
+}
+
+pub(crate) fn decode_envelope_download(response: Node<'_, '_>) -> Result<MessageEnvelopeDetails> {
+    if soap::child(response, ISDS_NS, "dmStatus").is_some() {
+        soap::status(response, "dm")?.into_result()?;
+    }
+    let returned = soap::child(response, ISDS_NS, "dmReturnedMessageEnvelope")
+        .filter(|node| !soap::is_nil(*node))
+        .ok_or_else(|| Error::invalid_response("dmReturnedMessageEnvelope is missing"))?;
+    let contents = soap::child(returned, ISDS_NS, "dmDm")
+        .ok_or_else(|| Error::invalid_response("dmReturnedMessageEnvelope/dmDm is missing"))?;
+    let envelope = message_common::parse_envelope(contents)?;
+    let hash = message_common::parse_hash(returned)?;
+    let qualified_timestamp = message_common::decode_base64(
+        soap::required_text_or_empty(returned, ISDS_NS, "dmQTimestamp")?,
+        "dmQTimestamp",
+    )?;
+    let delivery_time = message_common::optional_timestamp(returned, "dmDeliveryTime")?;
+    let acceptance_time = message_common::optional_timestamp(returned, "dmAcceptanceTime")?;
+    let state = message_common::required_state(returned)?;
+    let attachment_size = message_common::optional_i64(returned, "dmAttachmentSize")?;
+    let message_type = returned.attribute("dmType").map(str::to_owned);
+    let vodz = returned
+        .attribute("dmVODZ")
+        .map(|value| soap::parse_bool(value, "dmVODZ"))
+        .transpose()?;
+    let attachment_count = returned
+        .attribute("attsNum")
+        .map(|value| soap::parse(value, "attsNum"))
+        .transpose()?;
+    let special_message_flag = returned
+        .attribute("specMessFlag")
+        .map(|value| soap::parse(value, "specMessFlag"))
+        .transpose()?;
+
+    Ok(MessageEnvelopeDetails {
+        envelope,
+        hash,
+        qualified_timestamp,
+        delivery_time,
+        acceptance_time,
+        state,
+        attachment_size,
+        message_type,
+        vodz,
+        attachment_count,
+        special_message_flag,
     })
 }
 
@@ -306,6 +361,34 @@ mod tests {
         assert_eq!(record.envelope.id.as_str(), "00042");
         assert_eq!(record.vodz, Some(false));
         assert_eq!(record.special_message_flag, Some(4));
+    }
+
+    #[test]
+    fn parses_standalone_envelope_metadata() {
+        let xml = br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MessageEnvelopeDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessageEnvelope dmType="E" dmVODZ="true" attsNum="7" specMessFlag="2">
+              <dmDm><dmID>00042</dmID><dbIDSender>egtk37z</dbIDSender>
+                <dmSenderType>31</dmSenderType><dmAnnotation>Envelope only</dmAnnotation></dmDm>
+              <dmHash algorithm="SHA-256">AAEC/f7/</dmHash><dmQTimestamp>BAU=</dmQTimestamp>
+              <dmDeliveryTime>2026-11-19T12:00:00+01:00</dmDeliveryTime>
+              <dmAcceptanceTime>2026-11-19T12:01:00+01:00</dmAcceptanceTime>
+              <dmMessageStatus>6</dmMessageStatus><dmAttachmentSize>128</dmAttachmentSize>
+            </dmReturnedMessageEnvelope>
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </MessageEnvelopeDownloadResponse></soap:Body></soap:Envelope>"#;
+        let details = soap::decode(
+            xml,
+            "MessageEnvelopeDownloadResponse",
+            decode_envelope_download,
+        )
+        .unwrap();
+        assert_eq!(details.envelope.id.as_str(), "00042");
+        assert_eq!(details.message_type.as_deref(), Some("E"));
+        assert_eq!(details.vodz, Some(true));
+        assert_eq!(details.attachment_count, Some(7));
+        assert_eq!(details.special_message_flag, Some(2));
+        assert_eq!(details.qualified_timestamp.as_ref(), &[4, 5]);
     }
 
     #[test]

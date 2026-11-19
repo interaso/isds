@@ -3,6 +3,7 @@ name = "isds"
 version = "0.1.0"
 edition = "2024"
 description = "Async high-level client for Czech ISDS data boxes"
+readme = "README.md"
 
 [dependencies]
 base64 = "0.23"

@@ -267,9 +267,6 @@ impl Client {
                 )
                 .await?;
             uploaded.push(result);
-            // Let hyper finish releasing the upload connection before the next
-            // operation when running on tokio's current-thread runtime.
-            tokio::task::yield_now().await;
         }
 
         self.execute(
@@ -312,9 +309,30 @@ impl Client {
         .await
     }
 
+    /// Downloads a received message, automatically selecting ordinary DZ or VoDZ.
+    ///
+    /// This performs `MessageEnvelopeDownload` followed by either `MessageDownload`
+    /// or `BigMessageDownload`, so it makes two service requests. When the `vodz`
+    /// flag is already known from a [`MessageRecord`](crate::MessageRecord), calling
+    /// [`Client::download_received_message`] or [`Client::download_big_message`]
+    /// directly avoids the envelope request.
+    ///
+    /// Messages in states 4 or 5 are not yet downloadable; ISDS can return status
+    /// `1222`. A received-message list performs the separate delivery-by-login
+    /// step. No local cryptographic signature verification is performed.
+    pub async fn download_message(&self, id: &MessageId) -> Result<Message> {
+        let envelope = self.download_message_envelope(id).await?;
+        if envelope.vodz == Some(true) {
+            self.download_big_message(id).await
+        } else {
+            self.download_received_message(id).await
+        }
+    }
+
     /// Downloads an ordinary received message, including decoded attachments.
     ///
-    /// Messages in states 4 or 5 are not yet downloadable through this operation;
+    /// Prefer [`Client::download_message`] when the message type is not already
+    /// known. Messages in states 4 or 5 are not yet downloadable through this operation;
     /// ISDS can return status `1222`. A received-message list performs the separate
     /// delivery-by-login step. The returned unsigned XML is parsed for convenience;
     /// no local cryptographic signature verification is performed.
@@ -330,9 +348,9 @@ impl Client {
 
     /// Downloads a received large-volume message using SOAP 1.2 `BigMessageDownload`.
     ///
-    /// Use the `dmVODZ` flag from a message-list record or standalone envelope to
-    /// select this operation. Attachments are returned as inline binary or XML
-    /// content. No local cryptographic signature verification is performed.
+    /// Call this directly when the `dmVODZ` flag is already known; otherwise use
+    /// [`Client::download_message`]. Attachments are returned as inline binary or
+    /// XML content. No local cryptographic signature verification is performed.
     pub async fn download_big_message(&self, id: &MessageId) -> Result<Message> {
         self.execute(
             Service::VoDz,
@@ -433,7 +451,7 @@ impl Client {
         }
 
         let decoded = soap::decode(&body, response_operation, decode_response);
-        if status.is_success() {
+        let result = if status.is_success() {
             decoded
         } else {
             match decoded {
@@ -442,7 +460,11 @@ impl Client {
                     status: status.as_u16(),
                 }),
             }
-        }
+        };
+        // Let hyper finish releasing the connection before callers immediately
+        // chain another request on tokio's current-thread runtime.
+        tokio::task::yield_now().await;
+        result
     }
 
     #[cfg(test)]
@@ -1208,6 +1230,25 @@ mod tests {
             .mount(&server)
             .await;
 
+        let envelope_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MessageEnvelopeDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessageEnvelope dmVODZ="false"><dmDm>
+              <dmID>00042</dmID><dmSenderType>31</dmSenderType></dmDm>
+              <dmHash>AAEC/f7/</dmHash><dmQTimestamp>BAU=</dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus></dmReturnedMessageEnvelope>
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </MessageEnvelopeDownloadResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dx"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_info::envelope_download_request(&message_id).unwrap())
+                    .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(envelope_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
         assert!(
             client
                 .list_sent_messages(&query)
@@ -1224,7 +1265,7 @@ mod tests {
                 .records
                 .is_empty()
         );
-        let downloaded = client.download_received_message(&message_id).await.unwrap();
+        let downloaded = client.download_message(&message_id).await.unwrap();
         assert_eq!(
             downloaded.attachments[0].content().as_ref(),
             &[0, 1, 2, 253, 254, 255]
@@ -1243,7 +1284,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn big_download_and_envelope_download_use_their_documented_services() {
+    async fn automatic_big_download_and_envelope_download_use_their_documented_services() {
         let server = MockServer::start().await;
         let client = Client::test_client(server.uri());
         let id = MessageId::new("00042").unwrap();
@@ -1286,11 +1327,11 @@ mod tests {
                 String::from_utf8(message_info::envelope_download_request(&id).unwrap()).unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(envelope_response))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
-        let message = client.download_big_message(&id).await.unwrap();
+        let message = client.download_message(&id).await.unwrap();
         assert_eq!(message.vodz, Some(true));
         assert_eq!(message.attachments.len(), 1);
         let envelope = client.download_message_envelope(&id).await.unwrap();

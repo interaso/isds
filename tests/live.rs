@@ -270,11 +270,7 @@ async fn download_when_ready(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                let result = if record.vodz == Some(true) {
-                    recipient.client.download_big_message(id).await
-                } else {
-                    recipient.client.download_received_message(id).await
-                };
+                let result = recipient.client.download_message(id).await;
                 match result {
                     Ok(message) => return Ok(message),
                     Err(Error::Service(service)) if service.code() == "1222" => {}

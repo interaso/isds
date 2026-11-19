@@ -67,6 +67,7 @@ async fn example() -> isds::Result<()> {
 | `send_message` | `CreateMessage` or `UploadAttachment` + `CreateBigMessage` | `/DS/dz` or `/DS/vodz` |
 | `list_sent_messages` | `GetListOfSentMessages` | `/DS/dx` |
 | `list_received_messages` | `GetListOfReceivedMessages` | `/DS/dx` |
+| `download_message` | `MessageEnvelopeDownload` + `MessageDownload` or `BigMessageDownload` | `/DS/dx` + `/DS/dz` or `/DS/vodz` |
 | `download_received_message` | `MessageDownload` | `/DS/dz` |
 | `download_big_message` | `BigMessageDownload` | `/DS/vodz` |
 | `download_message_envelope` | `MessageEnvelopeDownload` | `/DS/dx` |
@@ -102,7 +103,7 @@ For VoDZ, the client uploads attachments sequentially and verifies returned SHA-
 
 All messages and downloads are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 256 MiB and is configurable with `ClientBuilder::max_response_bytes`. MTOM/XOP and streaming attachments are deferred.
 
-Use the `vodz` flag from a message-list record or `download_message_envelope` to choose `download_big_message` for a large-volume message. `download_big_message` decodes the inline `dmFile` attachments returned by ISDS.
+`download_message` automatically checks the standalone envelope and selects ordinary or VoDZ download. It performs two service requests. When a message-list record already supplies the `vodz` flag, call `download_received_message` or `download_big_message` directly to avoid the envelope request. Both download paths decode inline `dmFile` attachments returned by ISDS.
 
 Successful parsing, message download, and `GetDeliveryInfo` do **not** constitute local XMLDSig/CMS/CAdES verification. Signed ZFO operations are deferred.
 

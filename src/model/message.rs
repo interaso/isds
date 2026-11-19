@@ -106,10 +106,10 @@ impl AttachmentType {
     }
 }
 
-/// A fully buffered ordinary-message attachment.
+/// A fully buffered ordinary or large-volume message attachment.
 ///
-/// SOAP base64 encoding increases the encoded size. Large VoDZ/MTOM attachments
-/// are intentionally outside the initial ordinary-message API.
+/// SOAP base64 encoding increases the encoded size. MTOM/XOP streaming is not
+/// currently supported.
 #[derive(Clone)]
 pub struct Attachment {
     description: String,
@@ -243,7 +243,7 @@ impl fmt::Debug for Attachment {
     }
 }
 
-/// Optional metadata shared by outgoing and returned ordinary messages.
+/// Optional metadata shared by outgoing and returned messages.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MessageMetadata {
     /// Sender organizational unit name.
@@ -289,7 +289,7 @@ pub struct PublishOwnId {
     pub identification_level: Option<i64>,
 }
 
-/// An ordinary message ready for `CreateMessage`.
+/// A message ready for automatic ordinary or VoDZ sending.
 #[derive(Clone, Debug)]
 pub struct OutgoingMessage {
     /// Recipient databox ID.
@@ -304,12 +304,12 @@ pub struct OutgoingMessage {
     pub publish_own_id: Option<PublishOwnId>,
     /// Optional one-character `dmType` attribute.
     pub message_type: Option<String>,
-    /// Ordinary attachments; ISDS requires at least one and permits at most 100.
+    /// Attachments; ISDS requires at least one and permits at most 100.
     pub attachments: Vec<Attachment>,
 }
 
 impl OutgoingMessage {
-    /// Creates an ordinary message with no attachments or optional metadata.
+    /// Creates a message with no attachments or optional metadata.
     pub fn new(recipient: DataBoxId, annotation: impl Into<String>) -> Self {
         Self {
             recipient,
@@ -334,7 +334,7 @@ impl OutgoingMessage {
     }
 }
 
-/// Successful acknowledgement from `CreateMessage`.
+/// Successful acknowledgement from `CreateMessage` or `CreateBigMessage`.
 ///
 /// This confirms acceptance by ISDS, not delivery to the recipient.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -518,7 +518,7 @@ impl fmt::Debug for MessageHash {
     }
 }
 
-/// A downloaded ordinary received message.
+/// A downloaded ordinary or large-volume received message.
 #[derive(Clone, Debug)]
 pub struct Message {
     /// Message envelope.
@@ -541,6 +541,39 @@ pub struct Message {
     pub message_type: Option<String>,
     /// Optional raw special-message flag.
     pub special_message_flag: Option<i64>,
+    /// Whether this is a large-volume data message (VoDZ).
+    pub vodz: Option<bool>,
+    /// Total attachment count supplied for a VoDZ message.
+    pub attachment_count: Option<u32>,
+}
+
+/// A standalone received-message envelope returned by `MessageEnvelopeDownload`.
+///
+/// Unlike [`Message`], this result intentionally contains no attachment content.
+#[derive(Clone, Debug)]
+pub struct MessageEnvelopeDetails {
+    /// Message envelope.
+    pub envelope: MessageEnvelope,
+    /// ISDS-computed message hash.
+    pub hash: MessageHash,
+    /// Qualified timestamp token.
+    pub qualified_timestamp: Bytes,
+    /// Time at which the message entered the databox.
+    pub delivery_time: Option<Timestamp>,
+    /// Time of legal acceptance, if applicable.
+    pub acceptance_time: Option<Timestamp>,
+    /// Current message state.
+    pub state: MessageState,
+    /// Rounded attachment size in kilobytes.
+    pub attachment_size: Option<i64>,
+    /// Optional raw `dmType` attribute.
+    pub message_type: Option<String>,
+    /// Whether this is a large-volume data message (VoDZ).
+    pub vodz: Option<bool>,
+    /// Total attachment count supplied for a VoDZ message.
+    pub attachment_count: Option<u32>,
+    /// Optional raw special-message flag.
+    pub special_message_flag: Option<i64>,
 }
 
 /// One event in a message's delivery history.
@@ -552,7 +585,7 @@ pub struct DeliveryEvent {
     pub description: Option<String>,
 }
 
-/// Unsigned delivery information for an ordinary sent or received message.
+/// Unsigned delivery information for a sent or received message.
 #[derive(Clone, Debug)]
 pub struct DeliveryInfo {
     /// Message envelope without attachments.

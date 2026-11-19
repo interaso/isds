@@ -2,16 +2,16 @@
 
 A high-level asynchronous Rust client for Czech **ISDS / datové schránky**.
 
-The initial release focuses on username/password authentication, ordinary messages, databox lookup, and credit information. It uses the canonical `datovka.gov.cz` and `datovka-test.gov.cz` services and does not require `libdatovka` or another native library.
+The crate supports username/password authentication, ordinary and large-volume messages, databox lookup, and credit information. It uses the canonical `datovka.gov.cz` and `datovka-test.gov.cz` services and does not require `libdatovka` or another native library.
 
 ## Features
 
 - Explicit test or production environment selection.
 - Async, cheaply cloneable `Client` backed by `reqwest` and rustls.
-- Ordinary single-recipient `CreateMessage` calls with typed envelope metadata.
-- Binary and XML attachments with strict base64 handling.
+- One `send_message` API that automatically selects ordinary `CreateMessage` or VoDZ (`UploadAttachment` followed by `CreateBigMessage`).
+- Binary and XML attachments with strict base64 handling and verified VoDZ upload hashes.
 - Sent/received message pages with explicit offsets, limits, time filters, and state masks.
-- Message download, delivery information, delivery events, and mark-read.
+- Ordinary and VoDZ message download, standalone envelope download, delivery information, delivery events, and mark-read.
 - Exact-ID and criteria-based databox lookup.
 - Current credit and typed credit history in exact integer haléře.
 - Structured transport, HTTP, SOAP, ISDS-status, and decoding errors.
@@ -64,12 +64,16 @@ async fn example() -> isds::Result<()> {
 | `check_data_box` | `CheckDataBox` | `/DS/df` |
 | `find_data_boxes`, `find_data_box` | `FindDataBox2` | `/DS/df` |
 | `credit_info` | `DataBoxCreditInfo` | `/DS/df` |
-| `send_message` | `CreateMessage` | `/DS/dz` |
+| `send_message` | `CreateMessage` or `UploadAttachment` + `CreateBigMessage` | `/DS/dz` or `/DS/vodz` |
 | `list_sent_messages` | `GetListOfSentMessages` | `/DS/dx` |
 | `list_received_messages` | `GetListOfReceivedMessages` | `/DS/dx` |
 | `download_received_message` | `MessageDownload` | `/DS/dz` |
+| `download_big_message` | `BigMessageDownload` | `/DS/vodz` |
+| `download_message_envelope` | `MessageEnvelopeDownload` | `/DS/dx` |
 | `delivery_info` | `GetDeliveryInfo` | `/DS/dx` |
 | `mark_message_downloaded` | `MarkMessageAsDownloaded` | `/DS/dx` |
+
+`/DS/vodz` uses the selected environment's `ws2` host and SOAP 1.2. The other operations use `ws1` and SOAP 1.1.
 
 `VerifyMessage` is intentionally not presented as pre-send validation: the current ISDS documentation describes it as obsolete hash retrieval.
 
@@ -92,15 +96,21 @@ Messages in states 4 or 5 cannot yet be downloaded through `MessageDownload`; IS
 
 `send_message` and `mark_message_downloaded` are never automatically retried. A timeout or connection failure during sending has an **ambiguous outcome**: ISDS may have accepted the message. Reconcile using sent-message queries before submitting the same content again.
 
-Ordinary messages are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 128 MiB and is configurable with `ClientBuilder::max_response_bytes`. VoDZ and MTOM streaming are not part of this release.
+`send_message` sums decoded attachment bytes. Totals up to and including 20 MiB use ordinary DZ by default; larger totals use VoDZ. Configure the boundary with `ClientBuilder::big_message_threshold_bytes` and the default 100 MiB decoded-attachment maximum with `ClientBuilder::max_attachment_bytes`. Messages above the configured maximum are rejected before any network request.
 
-Successful parsing, `MessageDownload`, and `GetDeliveryInfo` do **not** constitute local XMLDSig/CMS/CAdES verification. Signed ZFO operations are deferred.
+For VoDZ, the client uploads attachments sequentially and verifies returned SHA-256, SHA-512, SHA3-256, or SHA3-512 hashes locally before `CreateBigMessage`. Unknown future hash algorithms remain usable and are checked by ISDS during creation. Unused uploads expire after approximately two hours according to the ISDS guide.
+
+All messages and downloads are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 256 MiB and is configurable with `ClientBuilder::max_response_bytes`. MTOM/XOP and streaming attachments are deferred.
+
+Use the `vodz` flag from a message-list record or `download_message_envelope` to choose `download_big_message` for a large-volume message. `download_big_message` decodes the inline `dmFile` attachments returned by ISDS.
+
+Successful parsing, message download, and `GetDeliveryInfo` do **not** constitute local XMLDSig/CMS/CAdES verification. Signed ZFO operations are deferred.
 
 ## Errors
 
 `Error` distinguishes invalid input, transport failures, authentication failures, unexpected HTTP statuses, SOAP faults, ISDS service statuses, oversized responses, and invalid responses.
 
-ISDS status codes remain strings with leading zeroes. `ServiceError` exposes the code, message, and optional reference number. Databox lookup `0002` (no result) and `0003` (truncated result) are represented as ordinary `DataBoxSearchResult` outcomes rather than transport failures.
+ISDS status codes remain strings with leading zeroes. `ServiceError` exposes the code, message, and optional reference number. Databox lookup `0002` (no result) and `0003` (truncated result) are represented as ordinary `DataBoxSearchResult` outcomes rather than transport failures. Informational status `0009` sets `DataBoxSearchResult::postal_delivery_restricted` while preserving returned records.
 
 ## Live tests against the official test environment
 
@@ -118,7 +128,7 @@ Run the lifecycle serially:
 ISDS_RUN_LIVE_TESTS=1 cargo test --test live -- --ignored --test-threads=1
 ```
 
-The lifecycle sends fresh synthetic messages to both recipients. Use only test accounts and non-sensitive content. It never retries a send and never targets production.
+The lifecycle sends fresh synthetic messages to both recipients and separately exercises automatic VoDZ selection with a 20 MiB + 1 byte attachment, including download and byte comparison. Use only test accounts and non-sensitive content. It never retries a send and never targets production.
 
 ## Development checks
 
@@ -136,7 +146,7 @@ Schema source URLs and SHA-256 hashes are recorded in [SCHEMAS.md](SCHEMAS.md). 
 - Blocking API.
 - Certificate, OTP, and Mobilní klíč authentication.
 - Multi-recipient `CreateMultipleMessage` and partial per-recipient results.
-- VoDZ, SOAP 1.2, MTOM/XOP, and streaming large attachments.
+- MTOM/XOP and streaming attachments; VoDZ currently uses buffered base64 and SOAP 1.2.
 - Signed ZFO/CMS/CAdES operations and local verification.
 - Administration, password changes, notifications, and archival services.
 - Durable inbox workers, persistence, automatic retries, and credit top-up/payment flows.

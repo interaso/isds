@@ -9,13 +9,17 @@ readme = "README.md"
 base64 = "0.23"
 bytes = "1"
 futures-util = "0.3"
+hex = "0.4"
 jiff = "1"
 mime = "0.3"
 quick-xml = "0.42"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
 roxmltree = "0.21"
 secrecy = "0.10"
+sha2 = "0.10"
+sha3 = "0.10"
 thiserror = "2"
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

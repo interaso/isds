@@ -10,6 +10,7 @@ Base URL: `https://www.datovka.gov.cz/static/wsdl/v20/`
 | `db_access.wsdl` | `c655b2e1cbe6b4f81ac707f9fac555fe056d2e91a81de71e305e320de99569ea` |
 | `db_search.wsdl` | `e4540467025adbdf097803e741dc604eaef24fdf26ce7d38e4f5f590b2f53670` |
 | `dmBaseTypes.xsd` | `780ec788bf88042d888838d12f18da9ce643e5a3caa95e4b4517514bc7abc5ea` |
+| `dm_VoDZ.wsdl` | `0d71702ac134ace3337d198745bdcf8926d4041713a163b04b3f972e4a0ae636` |
 | `dm_info.wsdl` | `b82c99e6cfbd80bdbdb20825cfdfba0a47d0894c4369a7f6708115984db8b5ac` |
 | `dm_operations.wsdl` | `80c3ed286c5c2775be8db64813c41ec54509b94d3839132192b03a65589bf905` |
 

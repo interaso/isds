@@ -24,7 +24,7 @@ pub(crate) fn decode_create_message(response: Node<'_, '_>) -> Result<SentMessag
     Ok(SentMessage { id })
 }
 
-fn validate_outgoing(message: &OutgoingMessage) -> Result<()> {
+pub(crate) fn validate_outgoing(message: &OutgoingMessage) -> Result<()> {
     if message.attachments.is_empty() {
         return Err(Error::invalid_input(
             "attachments",
@@ -34,7 +34,7 @@ fn validate_outgoing(message: &OutgoingMessage) -> Result<()> {
     if message.attachments.len() > 100 {
         return Err(Error::invalid_input(
             "attachments",
-            "an ordinary message cannot contain more than 100 attachments",
+            "a message cannot contain more than 100 attachments",
         ));
     }
     validate_length(&message.annotation, "annotation", 255)?;
@@ -84,7 +84,10 @@ fn validate_optional_length(value: Option<&str>, field: &'static str) -> Result<
     Ok(())
 }
 
-fn write_envelope(writer: &mut Writer<Vec<u8>>, message: &OutgoingMessage) -> soap::XmlResult {
+pub(crate) fn write_envelope(
+    writer: &mut Writer<Vec<u8>>,
+    message: &OutgoingMessage,
+) -> soap::XmlResult {
     let mut envelope = BytesStart::new("dmEnvelope");
     if let Some(message_type) = &message.message_type {
         envelope.push_attribute(("dmType", message_type.as_str()));

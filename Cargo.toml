@@ -5,6 +5,10 @@ edition = "2024"
 description = "Async high-level client for Czech ISDS data boxes"
 readme = "README.md"
 
+[features]
+default = []
+serde = ["dep:serde"]
+
 [dependencies]
 base64 = "0.23"
 bytes = "1"
@@ -16,12 +20,14 @@ quick-xml = "0.42"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
 roxmltree = "0.21"
 secrecy = "0.10"
+serde = { version = "1", optional = true }
 sha2 = "0.10"
 sha3 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
+serde_json = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "time"] }
 uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"

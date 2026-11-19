@@ -12,7 +12,7 @@ The crate supports username/password authentication, ordinary and large-volume m
 - Binary and XML attachments with strict base64 handling and verified VoDZ upload hashes.
 - Sent/received message pages with explicit offsets, limits, time filters, and state masks.
 - Ordinary and VoDZ message download, standalone envelope download, delivery information, delivery events, and mark-read.
-- Exact-ID and criteria-based databox lookup.
+- Exact-ID and criteria-based databox lookup, with descriptive type variants and raw-code fallback for specialized or future types.
 - Current credit and typed credit history in exact integer haléře.
 - Structured transport, HTTP, SOAP, ISDS-status, and decoding errors.
 - Redacted credentials and attachment content in debugging output.
@@ -69,7 +69,7 @@ async fn example() -> isds::Result<()> {
 | `list_received_messages` | `GetListOfReceivedMessages` | `/DS/dx` |
 | `download_message` | `MessageEnvelopeDownload` + `MessageDownload` or `BigMessageDownload` | `/DS/dx` + `/DS/dz` or `/DS/vodz` |
 | `download_received_message` | `MessageDownload` | `/DS/dz` |
-| `download_big_message` | `BigMessageDownload` | `/DS/vodz` |
+| `download_large_message` | `BigMessageDownload` | `/DS/vodz` |
 | `download_message_envelope` | `MessageEnvelopeDownload` | `/DS/dx` |
 | `delivery_info` | `GetDeliveryInfo` | `/DS/dx` |
 | `mark_message_downloaded` | `MarkMessageAsDownloaded` | `/DS/dx` |
@@ -97,13 +97,13 @@ Messages in states 4 or 5 cannot yet be downloaded through `MessageDownload`; IS
 
 `send_message` and `mark_message_downloaded` are never automatically retried. A timeout or connection failure during sending has an **ambiguous outcome**: ISDS may have accepted the message. Reconcile using sent-message queries before submitting the same content again.
 
-`send_message` sums decoded attachment bytes. Totals up to and including 20 MiB use ordinary DZ by default; larger totals use VoDZ. Configure the boundary with `ClientBuilder::big_message_threshold_bytes` and the default 100 MiB decoded-attachment maximum with `ClientBuilder::max_attachment_bytes`. Messages above the configured maximum are rejected before any network request.
+`send_message` sums decoded attachment bytes. Totals up to and including 20 MiB use ordinary DZ by default; larger totals use VoDZ. Configure the boundary with `ClientBuilder::large_message_threshold_bytes` and the default 100 MiB decoded-attachment maximum with `ClientBuilder::max_attachment_bytes`. Messages above the configured maximum are rejected before any network request.
 
 For VoDZ, the client uploads attachments sequentially and verifies returned SHA-256, SHA-512, SHA3-256, or SHA3-512 hashes locally before `CreateBigMessage`. Unknown future hash algorithms remain usable and are checked by ISDS during creation. Unused uploads expire after approximately two hours according to the ISDS guide.
 
 All messages and downloads are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 256 MiB and is configurable with `ClientBuilder::max_response_bytes`. MTOM/XOP and streaming attachments are deferred.
 
-`download_message` automatically checks the standalone envelope and selects ordinary or VoDZ download. It performs two service requests. When a message-list record already supplies the `vodz` flag, call `download_received_message` or `download_big_message` directly to avoid the envelope request. Both download paths decode inline `dmFile` attachments returned by ISDS.
+`download_message` automatically checks the standalone envelope and selects ordinary or VoDZ download. It performs two service requests. When a message-list record already supplies the `is_large_message` flag, call `download_received_message` or `download_large_message` directly to avoid the envelope request. Both download paths decode inline `dmFile` attachments returned by ISDS.
 
 Successful parsing, message download, and `GetDeliveryInfo` do **not** constitute local XMLDSig/CMS/CAdES verification. Signed ZFO operations are deferred.
 

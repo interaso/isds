@@ -68,7 +68,7 @@ pub(crate) fn decode_find_data_boxes(response: Node<'_, '_>) -> Result<DataBoxSe
 
 fn write_data_box(writer: &mut Writer<Vec<u8>>, data: &DataBox) -> soap::XmlResult {
     soap::nillable_text_element(writer, "dbID", data.id.as_ref().map(DataBoxId::as_str))?;
-    if let Some(value) = data.aifo_isds {
+    if let Some(value) = data.identified_in_population_register {
         soap::text_element(writer, "aifoIsds", soap::xml_bool(value))?;
     }
     soap::nillable_text_element(
@@ -105,7 +105,7 @@ fn write_data_box(writer: &mut Writer<Vec<u8>>, data: &DataBox) -> soap::XmlResu
     soap::nillable_text_element(writer, "adZipCode", data.address_zip_code.as_deref())?;
     soap::nillable_text_element(writer, "adState", data.address_state.as_deref())?;
     soap::nillable_text_element(writer, "nationality", data.nationality.as_deref())?;
-    soap::nillable_text_element(writer, "dbIdOVM", data.ovm_id.as_deref())?;
+    soap::nillable_text_element(writer, "dbIdOVM", data.public_authority_id.as_deref())?;
     soap::nillable_text_element(
         writer,
         "dbState",
@@ -129,7 +129,7 @@ fn write_data_box(writer: &mut Writer<Vec<u8>>, data: &DataBox) -> soap::XmlResu
 fn parse_data_box(node: Node<'_, '_>) -> Result<DataBox> {
     Ok(DataBox {
         id: optional_id(node, "dbID")?,
-        aifo_isds: optional_bool(node, "aifoIsds")?,
+        identified_in_population_register: optional_bool(node, "aifoIsds")?,
         box_type: soap::optional_text(node, ISDS_NS, "dbType")
             .map(|value| {
                 DataBoxType::new(value)
@@ -153,7 +153,7 @@ fn parse_data_box(node: Node<'_, '_>) -> Result<DataBox> {
         address_zip_code: optional_owned(node, "adZipCode"),
         address_state: optional_owned(node, "adState"),
         nationality: optional_owned(node, "nationality"),
-        ovm_id: optional_owned(node, "dbIdOVM"),
+        public_authority_id: optional_owned(node, "dbIdOVM"),
         state: optional_parsed::<i64>(node, "dbState")?,
         open_addressing: optional_bool(node, "dbOpenAddressing")?,
         upper_id: optional_id(node, "dbUpperID")?,
@@ -247,7 +247,7 @@ mod tests {
           </GetOwnerInfoFromLogin2Response></soap:Body></soap:Envelope>"#;
         let owner = soap::decode(xml, "GetOwnerInfoFromLogin2Response", decode_owner_info).unwrap();
         assert_eq!(owner.id.unwrap().as_str(), "egtk37z");
-        assert_eq!(owner.box_type.unwrap().as_str(), "PO");
+        assert_eq!(owner.box_type, Some(DataBoxType::LegalEntity));
         assert_eq!(owner.firm_name.as_deref(), Some("Synthetic & Test"));
         assert_eq!(owner.given_names, None);
         assert_eq!(owner.state, Some(1));

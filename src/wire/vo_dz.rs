@@ -104,7 +104,7 @@ fn verify_hash(attachment: &Attachment, hash: &AttachmentHash) -> Result<()> {
     }
 }
 
-pub(crate) fn create_big_message_request(
+pub(crate) fn create_large_message_request(
     message: &OutgoingMessage,
     uploaded: &[UploadedAttachment],
 ) -> Result<Vec<u8>> {
@@ -118,7 +118,7 @@ pub(crate) fn create_big_message_request(
     if uploaded.len() != message.attachments.len() {
         return Err(Error::invalid_input(
             "uploaded_attachments",
-            "every big-message attachment must have exactly one upload result",
+            "every large-message attachment must have exactly one upload result",
         ));
     }
 
@@ -153,17 +153,17 @@ fn write_external_files(
     Ok(())
 }
 
-pub(crate) fn decode_create_big_message(response: Node<'_, '_>) -> Result<SentMessage> {
+pub(crate) fn decode_create_large_message(response: Node<'_, '_>) -> Result<SentMessage> {
     message::decode_create_message(response)
 }
 
-pub(crate) fn big_message_download_request(id: &MessageId) -> Result<Vec<u8>> {
+pub(crate) fn large_message_download_request(id: &MessageId) -> Result<Vec<u8>> {
     soap::request_with_version(SoapVersion::Soap12, "BigMessageDownload", |writer| {
         soap::text_element(writer, "dmID", id.as_str())
     })
 }
 
-pub(crate) fn decode_big_message_download(response: Node<'_, '_>) -> Result<Message> {
+pub(crate) fn decode_large_message_download(response: Node<'_, '_>) -> Result<Message> {
     message_download::decode_download(response)
 }
 
@@ -212,10 +212,10 @@ mod tests {
     }
 
     #[test]
-    fn create_big_message_uses_external_ids_and_both_hash_algorithms() {
+    fn create_large_message_uses_external_ids_and_both_hash_algorithms() {
         let message = OutgoingMessage::new(DataBoxId::new("n94k37v").unwrap(), "Large message")
             .with_attachment(attachment());
-        let xml = String::from_utf8(create_big_message_request(&message, &[uploaded()]).unwrap())
+        let xml = String::from_utf8(create_large_message_request(&message, &[uploaded()]).unwrap())
             .unwrap();
         assert!(xml.contains("<CreateBigMessage "));
         assert!(xml.contains("dmFileMetaType=\"main\""));
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn big_download_reuses_inline_attachment_decoding_and_preserves_metadata() {
+    fn large_download_reuses_inline_attachment_decoding_and_preserves_metadata() {
         let xml = br#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
           <env:Body><BigMessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
             <dmReturnedMessage dmType="E" dmVODZ="true" attsNum="1"><dmDm>
@@ -273,10 +273,10 @@ mod tests {
         let message = soap::decode(
             xml,
             "BigMessageDownloadResponse",
-            decode_big_message_download,
+            decode_large_message_download,
         )
         .unwrap();
-        assert_eq!(message.vodz, Some(true));
+        assert_eq!(message.is_large_message, Some(true));
         assert_eq!(message.attachment_count, Some(1));
         assert_eq!(message.attachments.len(), 1);
         assert_eq!(

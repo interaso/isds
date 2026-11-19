@@ -289,7 +289,7 @@ pub struct PublishOwnId {
     pub identification_level: Option<i64>,
 }
 
-/// A message ready for automatic ordinary or VoDZ sending.
+/// A message ready for automatic ordinary or large-volume sending.
 #[derive(Clone, Debug)]
 pub struct OutgoingMessage {
     /// Recipient databox ID.
@@ -298,8 +298,8 @@ pub struct OutgoingMessage {
     pub annotation: String,
     /// Optional envelope metadata.
     pub metadata: MessageMetadata,
-    /// Optional `dmOVM` flag.
-    pub ovm: Option<bool>,
+    /// Whether to send the message in public-authority mode.
+    pub public_authority_mode: Option<bool>,
     /// Optional sender-ID publication setting.
     pub publish_own_id: Option<PublishOwnId>,
     /// Optional one-character `dmType` attribute.
@@ -315,7 +315,7 @@ impl OutgoingMessage {
             recipient,
             annotation: annotation.into(),
             metadata: MessageMetadata::default(),
-            ovm: None,
+            public_authority_mode: None,
             publish_own_id: None,
             message_type: None,
             attachments: Vec::new(),
@@ -482,8 +482,8 @@ pub struct MessageRecord {
     pub acceptance_time: Option<Timestamp>,
     /// Optional raw `dmType` attribute.
     pub message_type: Option<String>,
-    /// Whether this is a VoDZ message.
-    pub vodz: Option<bool>,
+    /// Whether this is a large-volume message.
+    pub is_large_message: Option<bool>,
     /// Optional raw special-message flag.
     pub special_message_flag: Option<i64>,
 }
@@ -541,9 +541,9 @@ pub struct Message {
     pub message_type: Option<String>,
     /// Optional raw special-message flag.
     pub special_message_flag: Option<i64>,
-    /// Whether this is a large-volume data message (VoDZ).
-    pub vodz: Option<bool>,
-    /// Total attachment count supplied for a VoDZ message.
+    /// Whether this is a large-volume message.
+    pub is_large_message: Option<bool>,
+    /// Total attachment count supplied for a large-volume message.
     pub attachment_count: Option<u32>,
 }
 
@@ -568,9 +568,9 @@ pub struct MessageEnvelopeDetails {
     pub attachment_size: Option<i64>,
     /// Optional raw `dmType` attribute.
     pub message_type: Option<String>,
-    /// Whether this is a large-volume data message (VoDZ).
-    pub vodz: Option<bool>,
-    /// Total attachment count supplied for a VoDZ message.
+    /// Whether this is a large-volume message.
+    pub is_large_message: Option<bool>,
+    /// Total attachment count supplied for a large-volume message.
     pub attachment_count: Option<u32>,
     /// Optional raw special-message flag.
     pub special_message_flag: Option<i64>,

@@ -17,7 +17,7 @@ use crate::wire::{credit, databox, message, message_download, message_info, soap
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
-const DEFAULT_BIG_MESSAGE_THRESHOLD_BYTES: u64 = 20 * 1024 * 1024;
+const DEFAULT_LARGE_MESSAGE_THRESHOLD_BYTES: u64 = 20 * 1024 * 1024;
 const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 
 /// ISDS deployment to which a client sends requests.
@@ -96,7 +96,7 @@ struct ClientInner {
     custom_base_url: bool,
     environment: Environment,
     max_response_bytes: usize,
-    big_message_threshold_bytes: u64,
+    large_message_threshold_bytes: u64,
     max_attachment_bytes: u64,
 }
 
@@ -108,8 +108,8 @@ impl fmt::Debug for Client {
             .field("base_url", &self.inner.base_url)
             .field("max_response_bytes", &self.inner.max_response_bytes)
             .field(
-                "big_message_threshold_bytes",
-                &self.inner.big_message_threshold_bytes,
+                "large_message_threshold_bytes",
+                &self.inner.large_message_threshold_bytes,
             )
             .field("max_attachment_bytes", &self.inner.max_attachment_bytes)
             .field("credentials", &"[REDACTED]")
@@ -124,7 +124,7 @@ pub struct ClientBuilder {
     connect_timeout: Duration,
     timeout: Duration,
     max_response_bytes: usize,
-    big_message_threshold_bytes: u64,
+    large_message_threshold_bytes: u64,
     max_attachment_bytes: u64,
     #[cfg(test)]
     test_base_url: Option<String>,
@@ -139,7 +139,7 @@ impl Client {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             timeout: DEFAULT_TIMEOUT,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
-            big_message_threshold_bytes: DEFAULT_BIG_MESSAGE_THRESHOLD_BYTES,
+            large_message_threshold_bytes: DEFAULT_LARGE_MESSAGE_THRESHOLD_BYTES,
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
             #[cfg(test)]
             test_base_url: None,
@@ -218,10 +218,10 @@ impl Client {
         .await
     }
 
-    /// Sends one message, automatically selecting ordinary DZ or VoDZ transport.
+    /// Sends one message, automatically selecting ordinary or large-volume transport.
     ///
     /// Messages whose decoded attachments exceed the configured threshold (20 MiB
-    /// by default) use VoDZ. Equality remains an ordinary message. The client
+    /// by default) use large-volume transport. Equality remains an ordinary message. The client
     /// uploads each large-message attachment and then calls `CreateBigMessage`;
     /// smaller messages use one `CreateMessage` call. The public arguments and
     /// result are identical in both cases.
@@ -242,8 +242,8 @@ impl Client {
                 ),
             ));
         }
-        if use_big_message(attachment_bytes, self.inner.big_message_threshold_bytes) {
-            self.send_big_message(message).await
+        if use_large_message(attachment_bytes, self.inner.large_message_threshold_bytes) {
+            self.send_large_message(message).await
         } else {
             self.execute(
                 Service::MessageOperations,
@@ -255,7 +255,7 @@ impl Client {
         }
     }
 
-    async fn send_big_message(&self, message: &OutgoingMessage) -> Result<SentMessage> {
+    async fn send_large_message(&self, message: &OutgoingMessage) -> Result<SentMessage> {
         let mut uploaded = Vec::with_capacity(message.attachments.len());
         for attachment in &message.attachments {
             let result = self
@@ -271,9 +271,9 @@ impl Client {
 
         self.execute(
             Service::VoDz,
-            vo_dz::create_big_message_request(message, &uploaded)?,
+            vo_dz::create_large_message_request(message, &uploaded)?,
             "CreateBigMessageResponse",
-            vo_dz::decode_create_big_message,
+            vo_dz::decode_create_large_message,
         )
         .await
     }
@@ -309,12 +309,12 @@ impl Client {
         .await
     }
 
-    /// Downloads a received message, automatically selecting ordinary DZ or VoDZ.
+    /// Downloads a received message, automatically selecting ordinary or large-volume.
     ///
     /// This performs `MessageEnvelopeDownload` followed by either `MessageDownload`
-    /// or `BigMessageDownload`, so it makes two service requests. When the `vodz`
+    /// or `BigMessageDownload`, so it makes two service requests. When the `is_large_message`
     /// flag is already known from a [`MessageRecord`](crate::MessageRecord), calling
-    /// [`Client::download_received_message`] or [`Client::download_big_message`]
+    /// [`Client::download_received_message`] or [`Client::download_large_message`]
     /// directly avoids the envelope request.
     ///
     /// Messages in states 4 or 5 are not yet downloadable; ISDS can return status
@@ -322,8 +322,8 @@ impl Client {
     /// step. No local cryptographic signature verification is performed.
     pub async fn download_message(&self, id: &MessageId) -> Result<Message> {
         let envelope = self.download_message_envelope(id).await?;
-        if envelope.vodz == Some(true) {
-            self.download_big_message(id).await
+        if envelope.is_large_message == Some(true) {
+            self.download_large_message(id).await
         } else {
             self.download_received_message(id).await
         }
@@ -351,19 +351,19 @@ impl Client {
     /// Call this directly when the `dmVODZ` flag is already known; otherwise use
     /// [`Client::download_message`]. Attachments are returned as inline binary or
     /// XML content. No local cryptographic signature verification is performed.
-    pub async fn download_big_message(&self, id: &MessageId) -> Result<Message> {
+    pub async fn download_large_message(&self, id: &MessageId) -> Result<Message> {
         self.execute(
             Service::VoDz,
-            vo_dz::big_message_download_request(id)?,
+            vo_dz::large_message_download_request(id)?,
             "BigMessageDownloadResponse",
-            vo_dz::decode_big_message_download,
+            vo_dz::decode_large_message_download,
         )
         .await
     }
 
     /// Downloads a received-message envelope without attachment content.
     ///
-    /// The result identifies ordinary versus VoDZ messages and includes the
+    /// The result identifies ordinary versus large-volume messages and includes the
     /// attachment count when supplied by ISDS. It also works for erased messages.
     pub async fn download_message_envelope(
         &self,
@@ -496,20 +496,20 @@ impl ClientBuilder {
 
     /// Sets the maximum buffered response size in bytes.
     ///
-    /// The default is 256 MiB. Ordinary and VoDZ attachments can be base64 encoded,
+    /// The default is 256 MiB. Ordinary and large-message attachments can be base64 encoded,
     /// so downloading them requires substantially more memory than their decoded size.
     pub fn max_response_bytes(mut self, limit: usize) -> Self {
         self.max_response_bytes = limit;
         self
     }
 
-    /// Sets the nominal decoded-attachment threshold for automatic VoDZ selection.
+    /// Sets the nominal decoded-attachment threshold for automatic large-message selection.
     ///
     /// The default is 20 MiB. ISDS documents an overlapping, non-fixed boundary
     /// around 20 MB, so this setting allows target-environment tuning. Equality
-    /// uses ordinary `CreateMessage`; only a larger total uses VoDZ.
-    pub fn big_message_threshold_bytes(mut self, threshold: u64) -> Self {
-        self.big_message_threshold_bytes = threshold;
+    /// uses ordinary `CreateMessage`; only a larger total uses large-volume transport.
+    pub fn large_message_threshold_bytes(mut self, threshold: u64) -> Self {
+        self.large_message_threshold_bytes = threshold;
         self
     }
 
@@ -545,9 +545,9 @@ impl ClientBuilder {
                 "limit must be greater than zero",
             ));
         }
-        if self.big_message_threshold_bytes == 0 {
+        if self.large_message_threshold_bytes == 0 {
             return Err(Error::invalid_input(
-                "big_message_threshold_bytes",
+                "large_message_threshold_bytes",
                 "threshold must be greater than zero",
             ));
         }
@@ -557,9 +557,9 @@ impl ClientBuilder {
                 "maximum must be greater than zero",
             ));
         }
-        if self.big_message_threshold_bytes >= self.max_attachment_bytes {
+        if self.large_message_threshold_bytes >= self.max_attachment_bytes {
             return Err(Error::invalid_input(
-                "big_message_threshold_bytes",
+                "large_message_threshold_bytes",
                 "threshold must be smaller than the maximum attachment size",
             ));
         }
@@ -589,7 +589,7 @@ impl ClientBuilder {
                 custom_base_url,
                 environment: self.environment,
                 max_response_bytes: self.max_response_bytes,
-                big_message_threshold_bytes: self.big_message_threshold_bytes,
+                large_message_threshold_bytes: self.large_message_threshold_bytes,
                 max_attachment_bytes: self.max_attachment_bytes,
             }),
         })
@@ -654,7 +654,7 @@ fn attachment_bytes(message: &OutgoingMessage) -> Result<u64> {
         })
 }
 
-fn use_big_message(total_attachment_bytes: u64, threshold: u64) -> bool {
+fn use_large_message(total_attachment_bytes: u64, threshold: u64) -> bool {
     total_attachment_bytes > threshold
 }
 
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_message_automatically_uploads_and_creates_a_big_message() {
+    async fn send_message_automatically_uploads_and_creates_a_large_message() {
         let server = MockServer::start().await;
         let outgoing = outgoing();
         let upload_response = r#"<UploadAttachmentResponse xmlns="http://isds.czechpoint.cz/v20">
@@ -1045,7 +1045,7 @@ mod tests {
             .and(path("/DS/vodz"))
             .and(wiremock::matchers::body_string(
                 String::from_utf8(
-                    vo_dz::create_big_message_request(&outgoing, &[uploaded]).unwrap(),
+                    vo_dz::create_large_message_request(&outgoing, &[uploaded]).unwrap(),
                 )
                 .unwrap(),
             ))
@@ -1061,7 +1061,7 @@ mod tests {
             .await;
 
         let client = ClientBuilder::test_at(Environment::Test, server.uri())
-            .big_message_threshold_bytes(1)
+            .large_message_threshold_bytes(1)
             .max_attachment_bytes(1024)
             .build()
             .unwrap();
@@ -1079,7 +1079,7 @@ mod tests {
             .mount(&server)
             .await;
         let client = ClientBuilder::test_at(Environment::Test, server.uri())
-            .big_message_threshold_bytes(1)
+            .large_message_threshold_bytes(1)
             .max_attachment_bytes(2)
             .build()
             .unwrap();
@@ -1095,10 +1095,10 @@ mod tests {
     }
 
     #[test]
-    fn big_message_threshold_uses_strictly_greater_than() {
-        assert!(!use_big_message(20 * 1024 * 1024 - 1, 20 * 1024 * 1024));
-        assert!(!use_big_message(20 * 1024 * 1024, 20 * 1024 * 1024));
-        assert!(use_big_message(20 * 1024 * 1024 + 1, 20 * 1024 * 1024));
+    fn large_message_threshold_uses_strictly_greater_than() {
+        assert!(!use_large_message(20 * 1024 * 1024 - 1, 20 * 1024 * 1024));
+        assert!(!use_large_message(20 * 1024 * 1024, 20 * 1024 * 1024));
+        assert!(use_large_message(20 * 1024 * 1024 + 1, 20 * 1024 * 1024));
     }
 
     #[tokio::test]
@@ -1284,12 +1284,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn automatic_big_download_and_envelope_download_use_their_documented_services() {
+    async fn automatic_large_download_and_envelope_download_use_their_documented_services() {
         let server = MockServer::start().await;
         let client = Client::test_client(server.uri());
         let id = MessageId::new("00042").unwrap();
 
-        let big_response = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+        let large_response = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
           <env:Body><BigMessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
             <dmReturnedMessage dmVODZ="true" attsNum="1"><dmDm><dmID>00042</dmID>
               <dmSenderType>31</dmSenderType><dmFiles><dmFile dmMimeType="application/octet-stream"
@@ -1306,9 +1306,9 @@ mod tests {
                 "application/soap+xml; charset=utf-8",
             ))
             .and(wiremock::matchers::body_string(
-                String::from_utf8(vo_dz::big_message_download_request(&id).unwrap()).unwrap(),
+                String::from_utf8(vo_dz::large_message_download_request(&id).unwrap()).unwrap(),
             ))
-            .respond_with(ResponseTemplate::new(200).set_body_string(big_response))
+            .respond_with(ResponseTemplate::new(200).set_body_string(large_response))
             .expect(1)
             .mount(&server)
             .await;
@@ -1332,10 +1332,10 @@ mod tests {
             .await;
 
         let message = client.download_message(&id).await.unwrap();
-        assert_eq!(message.vodz, Some(true));
+        assert_eq!(message.is_large_message, Some(true));
         assert_eq!(message.attachments.len(), 1);
         let envelope = client.download_message_envelope(&id).await.unwrap();
-        assert_eq!(envelope.vodz, Some(true));
+        assert_eq!(envelope.is_large_message, Some(true));
         assert_eq!(envelope.attachment_count, Some(1));
         server.verify().await;
     }

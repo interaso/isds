@@ -59,14 +59,24 @@ impl TryFrom<&str> for DataBoxId {
     }
 }
 
-/// A databox type code such as `FO`, `PFO`, `PO`, or `OVM`.
-///
-/// The raw value is retained so newly introduced ISDS subtypes remain usable.
+/// The base type of a databox, with raw storage for specialized or future types.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct DataBoxType(String);
+#[non_exhaustive]
+pub enum DataBoxType {
+    /// A natural person (`FO`).
+    NaturalPerson,
+    /// A self-employed person (`PFO`).
+    SelfEmployedPerson,
+    /// A legal entity (`PO`).
+    LegalEntity,
+    /// A public authority (`OVM`).
+    PublicAuthority,
+    /// A specialized subtype such as `PFO_ADVOK`, or a type introduced later.
+    Other(String),
+}
 
 impl DataBoxType {
-    /// Creates a non-empty databox type code.
+    /// Converts a non-empty ISDS databox type code into a typed value.
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
         if value.is_empty() {
@@ -75,12 +85,24 @@ impl DataBoxType {
                 "databox type must not be empty",
             ));
         }
-        Ok(Self(value))
+        Ok(match value.as_str() {
+            "FO" => Self::NaturalPerson,
+            "PFO" => Self::SelfEmployedPerson,
+            "PO" => Self::LegalEntity,
+            "OVM" => Self::PublicAuthority,
+            _ => Self::Other(value),
+        })
     }
 
     /// Returns the raw ISDS databox type code.
     pub fn as_str(&self) -> &str {
-        &self.0
+        match self {
+            Self::NaturalPerson => "FO",
+            Self::SelfEmployedPerson => "PFO",
+            Self::LegalEntity => "PO",
+            Self::PublicAuthority => "OVM",
+            Self::Other(value) => value,
+        }
     }
 }
 
@@ -109,8 +131,8 @@ pub struct DataBox {
     /// Databox identifier.
     pub id: Option<DataBoxId>,
     /// Whether a personal databox is identified through the basic population register.
-    pub aifo_isds: Option<bool>,
-    /// Raw databox type code.
+    pub identified_in_population_register: Option<bool>,
+    /// Databox type, including specialized or future raw codes.
     pub box_type: Option<DataBoxType>,
     /// Subject identification number (IČO or a foreign equivalent).
     pub identification_number: Option<String>,
@@ -147,12 +169,12 @@ pub struct DataBox {
     /// Nationality or legal-entity registration country.
     pub nationality: Option<String>,
     /// Identifier from the Register of Public Authorities.
-    pub ovm_id: Option<String>,
+    pub public_authority_id: Option<String>,
     /// Raw databox state code; only `1` denotes an active box in owner information.
     pub state: Option<i64>,
-    /// Whether a non-OVM databox has open addressing enabled.
+    /// Whether a non-public-authority databox has open addressing enabled.
     pub open_addressing: Option<bool>,
-    /// Identifier of the superior OVM databox.
+    /// Identifier of the superior public-authority databox.
     pub upper_id: Option<DataBoxId>,
 }
 
@@ -173,7 +195,7 @@ pub struct DataBoxSearchResult {
     pub boxes: Vec<DataBox>,
     /// Whether ISDS reported that additional results were truncated.
     pub truncated: bool,
-    /// Whether a found non-OVM box cannot receive the caller's postal data message.
+    /// Whether a found non-public-authority box cannot receive the caller's postal data message.
     ///
     /// This corresponds to informational status `0009` and does not describe
     /// general availability for ordinary data messages.
@@ -269,9 +291,23 @@ mod tests {
     }
 
     #[test]
-    fn databox_type_preserves_future_values() {
-        let value = DataBoxType::new("FUTURE_TYPE").unwrap();
-        assert_eq!(value.as_str(), "FUTURE_TYPE");
+    fn databox_type_maps_base_types_and_preserves_other_codes() {
+        for (raw, expected) in [
+            ("FO", DataBoxType::NaturalPerson),
+            ("PFO", DataBoxType::SelfEmployedPerson),
+            ("PO", DataBoxType::LegalEntity),
+            ("OVM", DataBoxType::PublicAuthority),
+        ] {
+            let value = DataBoxType::new(raw).unwrap();
+            assert_eq!(value, expected);
+            assert_eq!(value.as_str(), raw);
+        }
+
+        for raw in ["PFO_ADVOK", "OVM_NOTAR", "FUTURE_TYPE"] {
+            let value = DataBoxType::new(raw).unwrap();
+            assert_eq!(value, DataBoxType::Other(raw.to_owned()));
+            assert_eq!(value.as_str(), raw);
+        }
         assert!(DataBoxType::new("").is_err());
     }
 }

@@ -9,8 +9,8 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::error::{Error, Result};
 use crate::model::{
     CreditInfo, CreditQuery, DataBox, DataBoxId, DataBoxSearchResult, DataBoxState, DeliveryInfo,
-    Message, MessageEnvelopeDetails, MessageId, MessageListQuery, MessagePage, OutgoingMessage,
-    SentMessage,
+    Message, MessageEnvelopeDetails, MessageId, MessageListQuery, MessageMode, MessagePage,
+    OutgoingMessage, SentMessage,
 };
 use crate::wire::{credit, databox, message, message_download, message_info, soap, vo_dz};
 
@@ -218,19 +218,23 @@ impl Client {
         .await
     }
 
-    /// Sends one message, automatically selecting ordinary or large-volume transport.
+    /// Sends one message using automatic, standard, or large-message mode.
     ///
-    /// Messages whose decoded attachments exceed the configured threshold (20 MiB
-    /// by default) use large-volume transport. Equality remains an ordinary message. The client
-    /// uploads each large-message attachment and then calls `CreateBigMessage`;
-    /// smaller messages use one `CreateMessage` call. The public arguments and
-    /// result are identical in both cases.
+    /// `None` selects large-message transport when decoded attachments exceed the
+    /// configured threshold (20 MiB by default); equality remains standard.
+    /// `Some(MessageMode::Standard)` forces `CreateMessage`, while
+    /// `Some(MessageMode::Large)` forces sequential uploads followed by
+    /// `CreateBigMessage`, regardless of the threshold.
     ///
     /// Success confirms acceptance by ISDS, not delivery. No upload or creation
     /// operation is retried automatically. A transport failure during final
     /// creation has an ambiguous outcome: reconcile through sent-message queries
     /// before submitting the same content again.
-    pub async fn send_message(&self, message: &OutgoingMessage) -> Result<SentMessage> {
+    pub async fn send_message(
+        &self,
+        message: &OutgoingMessage,
+        mode: Option<MessageMode>,
+    ) -> Result<SentMessage> {
         message::validate_outgoing(message)?;
         let attachment_bytes = attachment_bytes(message)?;
         if attachment_bytes > self.inner.max_attachment_bytes {
@@ -242,7 +246,11 @@ impl Client {
                 ),
             ));
         }
-        if use_large_message(attachment_bytes, self.inner.large_message_threshold_bytes) {
+        if use_large_message(
+            attachment_bytes,
+            self.inner.large_message_threshold_bytes,
+            mode,
+        ) {
             self.send_large_message(message).await
         } else {
             self.execute(
@@ -309,34 +317,36 @@ impl Client {
         .await
     }
 
-    /// Downloads a received message, automatically selecting ordinary or large-volume.
+    /// Downloads a received message using automatic, standard, or large-message mode.
     ///
-    /// This performs `MessageEnvelopeDownload` followed by either `MessageDownload`
-    /// or `BigMessageDownload`, so it makes two service requests. When the `is_large_message`
-    /// flag is already known from a [`MessageRecord`](crate::MessageRecord), calling
-    /// [`Client::download_received_message`] or [`Client::download_large_message`]
-    /// directly avoids the envelope request.
+    /// `None` performs `MessageEnvelopeDownload` followed by either
+    /// `MessageDownload` or `BigMessageDownload`, making two service requests.
+    /// `Some(MessageMode::Standard)` or `Some(MessageMode::Large)` forces the
+    /// corresponding download directly and avoids the envelope request.
     ///
     /// Messages in states 4 or 5 are not yet downloadable; ISDS can return status
     /// `1222`. A received-message list performs the separate delivery-by-login
     /// step. No local cryptographic signature verification is performed.
-    pub async fn download_message(&self, id: &MessageId) -> Result<Message> {
-        let envelope = self.download_message_envelope(id).await?;
-        if envelope.is_large_message == Some(true) {
-            self.download_large_message(id).await
-        } else {
-            self.download_received_message(id).await
+    pub async fn download_message(
+        &self,
+        id: &MessageId,
+        mode: Option<MessageMode>,
+    ) -> Result<Message> {
+        match mode {
+            Some(MessageMode::Standard) => self.download_standard_message(id).await,
+            Some(MessageMode::Large) => self.download_large_message(id).await,
+            None => {
+                let envelope = self.download_message_envelope(id).await?;
+                if envelope.is_large_message == Some(true) {
+                    self.download_large_message(id).await
+                } else {
+                    self.download_standard_message(id).await
+                }
+            }
         }
     }
 
-    /// Downloads an ordinary received message, including decoded attachments.
-    ///
-    /// Prefer [`Client::download_message`] when the message type is not already
-    /// known. Messages in states 4 or 5 are not yet downloadable through this operation;
-    /// ISDS can return status `1222`. A received-message list performs the separate
-    /// delivery-by-login step. The returned unsigned XML is parsed for convenience;
-    /// no local cryptographic signature verification is performed.
-    pub async fn download_received_message(&self, id: &MessageId) -> Result<Message> {
+    async fn download_standard_message(&self, id: &MessageId) -> Result<Message> {
         self.execute(
             Service::MessageOperations,
             message_download::download_request(id)?,
@@ -346,12 +356,7 @@ impl Client {
         .await
     }
 
-    /// Downloads a received large-volume message using SOAP 1.2 `BigMessageDownload`.
-    ///
-    /// Call this directly when the `dmVODZ` flag is already known; otherwise use
-    /// [`Client::download_message`]. Attachments are returned as inline binary or
-    /// XML content. No local cryptographic signature verification is performed.
-    pub async fn download_large_message(&self, id: &MessageId) -> Result<Message> {
+    async fn download_large_message(&self, id: &MessageId) -> Result<Message> {
         self.execute(
             Service::VoDz,
             vo_dz::large_message_download_request(id)?,
@@ -654,8 +659,16 @@ fn attachment_bytes(message: &OutgoingMessage) -> Result<u64> {
         })
 }
 
-fn use_large_message(total_attachment_bytes: u64, threshold: u64) -> bool {
-    total_attachment_bytes > threshold
+fn use_large_message(
+    total_attachment_bytes: u64,
+    threshold: u64,
+    mode: Option<MessageMode>,
+) -> bool {
+    match mode {
+        Some(MessageMode::Standard) => false,
+        Some(MessageMode::Large) => true,
+        None => total_attachment_bytes > threshold,
+    }
 }
 
 async fn read_bounded(response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
@@ -985,15 +998,26 @@ mod tests {
                 String::from_utf8(message::create_message_request(&outgoing).unwrap()).unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(response))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
         let sent = Client::test_client(server.uri())
-            .send_message(&outgoing)
+            .send_message(&outgoing, None)
             .await
             .unwrap();
         assert_eq!(sent.id.as_str(), "00042");
+
+        let forced = ClientBuilder::test_at(Environment::Test, server.uri())
+            .large_message_threshold_bytes(1)
+            .max_attachment_bytes(1024)
+            .build()
+            .unwrap();
+        let forced_sent = forced
+            .send_message(&outgoing, Some(MessageMode::Standard))
+            .await
+            .unwrap();
+        assert_eq!(forced_sent.id.as_str(), "00042");
         server.verify().await;
     }
 
@@ -1032,7 +1056,7 @@ mod tests {
                 .unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(upload_response))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -1050,7 +1074,7 @@ mod tests {
                 .unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(create_response))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -1065,8 +1089,19 @@ mod tests {
             .max_attachment_bytes(1024)
             .build()
             .unwrap();
-        let sent = client.send_message(&outgoing).await.unwrap();
+        let sent = client.send_message(&outgoing, None).await.unwrap();
         assert_eq!(sent.id.as_str(), "00099");
+
+        let forced = ClientBuilder::test_at(Environment::Test, server.uri())
+            .large_message_threshold_bytes(1024)
+            .max_attachment_bytes(2048)
+            .build()
+            .unwrap();
+        let forced_sent = forced
+            .send_message(&outgoing, Some(MessageMode::Large))
+            .await
+            .unwrap();
+        assert_eq!(forced_sent.id.as_str(), "00099");
         server.verify().await;
     }
 
@@ -1083,7 +1118,7 @@ mod tests {
             .max_attachment_bytes(2)
             .build()
             .unwrap();
-        let error = client.send_message(&outgoing()).await.unwrap_err();
+        let error = client.send_message(&outgoing(), None).await.unwrap_err();
         assert!(matches!(
             error,
             Error::InvalidInput {
@@ -1096,9 +1131,21 @@ mod tests {
 
     #[test]
     fn large_message_threshold_uses_strictly_greater_than() {
-        assert!(!use_large_message(20 * 1024 * 1024 - 1, 20 * 1024 * 1024));
-        assert!(!use_large_message(20 * 1024 * 1024, 20 * 1024 * 1024));
-        assert!(use_large_message(20 * 1024 * 1024 + 1, 20 * 1024 * 1024));
+        let threshold = 20 * 1024 * 1024;
+        assert!(!use_large_message(threshold - 1, threshold, None));
+        assert!(!use_large_message(threshold, threshold, None));
+        assert!(use_large_message(threshold + 1, threshold, None));
+    }
+
+    #[test]
+    fn forced_message_mode_overrides_the_threshold() {
+        let threshold = 20 * 1024 * 1024;
+        assert!(!use_large_message(
+            threshold + 1,
+            threshold,
+            Some(MessageMode::Standard)
+        ));
+        assert!(use_large_message(1, threshold, Some(MessageMode::Large)));
     }
 
     #[tokio::test]
@@ -1112,7 +1159,7 @@ mod tests {
         let mut outgoing = outgoing();
         outgoing.attachments.clear();
         let error = Client::test_client(server.uri())
-            .send_message(&outgoing)
+            .send_message(&outgoing, None)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1137,7 +1184,7 @@ mod tests {
             .timeout(Duration::from_millis(10))
             .build()
             .unwrap();
-        let error = client.send_message(&outgoing()).await.unwrap_err();
+        let error = client.send_message(&outgoing(), None).await.unwrap_err();
         assert!(matches!(error, Error::Transport(_)));
         server.verify().await;
     }
@@ -1192,7 +1239,7 @@ mod tests {
                     .unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(download_response))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -1265,11 +1312,16 @@ mod tests {
                 .records
                 .is_empty()
         );
-        let downloaded = client.download_message(&message_id).await.unwrap();
+        let downloaded = client.download_message(&message_id, None).await.unwrap();
         assert_eq!(
             downloaded.attachments[0].content().as_ref(),
             &[0, 1, 2, 253, 254, 255]
         );
+        let forced = client
+            .download_message(&message_id, Some(MessageMode::Standard))
+            .await
+            .unwrap();
+        assert_eq!(forced.envelope.id, message_id);
         assert_eq!(
             client
                 .delivery_info(&message_id)
@@ -1309,7 +1361,7 @@ mod tests {
                 String::from_utf8(vo_dz::large_message_download_request(&id).unwrap()).unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(large_response))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -1331,9 +1383,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let message = client.download_message(&id).await.unwrap();
+        let message = client.download_message(&id, None).await.unwrap();
         assert_eq!(message.is_large_message, Some(true));
         assert_eq!(message.attachments.len(), 1);
+        let forced = client
+            .download_message(&id, Some(MessageMode::Large))
+            .await
+            .unwrap();
+        assert_eq!(forced.envelope.id, id);
         let envelope = client.download_message_envelope(&id).await.unwrap();
         assert_eq!(envelope.is_large_message, Some(true));
         assert_eq!(envelope.attachment_count, Some(1));

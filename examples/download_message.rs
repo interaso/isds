@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = common::client()?;
 
     // Automatically selects ordinary or large-volume download.
-    let message = client.download_message(&id).await?;
+    let message = client.download_message(&id, None).await?;
     println!(
         "message {}: state={:?}, large={}, attachments={}",
         message.envelope.id,

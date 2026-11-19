@@ -228,6 +228,7 @@ impl DataBox {
 
 /// Results and continuation information from a databox lookup.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct DataBoxSearchResult {
     /// Returned databox records.
     pub boxes: Vec<DataBox>,

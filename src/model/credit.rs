@@ -68,6 +68,7 @@ impl CreditQuery {
 
 /// Current credit and requested credit-history events.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct CreditInfo {
     /// Current credit in haléře, if supplied by ISDS.
     pub current_credit: Option<i64>,
@@ -79,6 +80,7 @@ pub struct CreditInfo {
 
 /// One credit-account event.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct CreditEvent {
     /// Event timestamp, including the offset supplied by ISDS.
     pub time: Timestamp,
@@ -121,6 +123,7 @@ pub enum CreditEventDetails {
 
 /// Details of a Datový trezor capacity change.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct DataVaultChange {
     /// New capacity in the unit defined by ISDS.
     pub new_capacity: i64,

@@ -104,6 +104,18 @@ impl<'de> serde::Deserialize<'de> for MessageId {
     }
 }
 
+/// Explicit standard or large-message behavior for sending and downloading.
+///
+/// Pass `Some(mode)` to force a mode, or `None` to select it automatically.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum MessageMode {
+    /// Use ordinary `CreateMessage` or `MessageDownload` operations.
+    Standard,
+    /// Use large-message upload/creation or `BigMessageDownload` operations.
+    Large,
+}
+
 /// ISDS attachment role.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
@@ -375,6 +387,7 @@ impl OutgoingMessage {
 ///
 /// This confirms acceptance by ISDS, not delivery to the recipient.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct SentMessage {
     /// ID assigned by ISDS.
     pub id: MessageId,
@@ -477,6 +490,7 @@ impl Default for MessageListQuery {
 
 /// The common envelope returned in lists, downloads, and delivery information.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct MessageEnvelope {
     /// Opaque message ID.
     pub id: MessageId,
@@ -504,6 +518,7 @@ pub struct MessageEnvelope {
 
 /// One entry in a sent- or received-message page.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct MessageRecord {
     /// One-based ordinal within the returned result set.
     pub ordinal: u32,
@@ -527,6 +542,7 @@ pub struct MessageRecord {
 
 /// One explicitly requested page of message records.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct MessagePage {
     /// Returned records.
     pub records: Vec<MessageRecord>,
@@ -538,6 +554,7 @@ pub struct MessagePage {
 
 /// Base64-decoded message hash and its optional algorithm identifier.
 #[derive(Clone, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct MessageHash {
     /// Raw hash bytes.
     pub bytes: Bytes,
@@ -557,6 +574,7 @@ impl fmt::Debug for MessageHash {
 
 /// A downloaded ordinary or large-volume received message.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Message {
     /// Message envelope.
     pub envelope: MessageEnvelope,
@@ -588,6 +606,7 @@ pub struct Message {
 ///
 /// Unlike [`Message`], this result intentionally contains no attachment content.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct MessageEnvelopeDetails {
     /// Message envelope.
     pub envelope: MessageEnvelope,
@@ -615,6 +634,7 @@ pub struct MessageEnvelopeDetails {
 
 /// One event in a message's delivery history.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct DeliveryEvent {
     /// Event timestamp.
     pub time: Option<Timestamp>,
@@ -624,6 +644,7 @@ pub struct DeliveryEvent {
 
 /// Unsigned delivery information for a sent or received message.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct DeliveryInfo {
     /// Message envelope without attachments.
     pub envelope: MessageEnvelope,

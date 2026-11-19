@@ -13,6 +13,6 @@ pub use model::{
     Attachment, AttachmentType, CreditEvent, CreditEventDetails, CreditInfo, CreditQuery, DataBox,
     DataBoxId, DataBoxSearchResult, DataBoxState, DataBoxType, DataVaultChange, DeliveryEvent,
     DeliveryInfo, Message, MessageEnvelope, MessageEnvelopeDetails, MessageHash, MessageId,
-    MessageListQuery, MessageMetadata, MessagePage, MessageRecord, MessageState, OutgoingMessage,
-    PublishOwnId, SentMessage,
+    MessageListQuery, MessageMetadata, MessageMode, MessagePage, MessageRecord, MessageState,
+    OutgoingMessage, PublishOwnId, SentMessage,
 };

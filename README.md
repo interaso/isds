@@ -48,7 +48,7 @@ async fn example() -> isds::Result<()> {
         ));
 
     // Acceptance by ISDS is not the same as delivery to the recipient.
-    let sent = client.send_message(&message).await?;
+    let sent = client.send_message(&message, None).await?;
     let delivery = client.delivery_info(&sent.id).await?;
     println!("message {} has state {:?}", sent.id, delivery.state);
     Ok(())
@@ -95,9 +95,7 @@ isds = { version = "0.1.0", features = ["serde"] }
 | `send_message` | `CreateMessage` or `UploadAttachment` + `CreateBigMessage` | `/DS/dz` or `/DS/vodz` |
 | `list_sent_messages` | `GetListOfSentMessages` | `/DS/dx` |
 | `list_received_messages` | `GetListOfReceivedMessages` | `/DS/dx` |
-| `download_message` | `MessageEnvelopeDownload` + `MessageDownload` or `BigMessageDownload` | `/DS/dx` + `/DS/dz` or `/DS/vodz` |
-| `download_received_message` | `MessageDownload` | `/DS/dz` |
-| `download_large_message` | `BigMessageDownload` | `/DS/vodz` |
+| `download_message` | `MessageDownload` or `BigMessageDownload`, with optional envelope detection | `/DS/dz` or `/DS/vodz` |
 | `download_message_envelope` | `MessageEnvelopeDownload` | `/DS/dx` |
 | `delivery_info` | `GetDeliveryInfo` | `/DS/dx` |
 | `mark_message_downloaded` | `MarkMessageAsDownloaded` | `/DS/dx` |
@@ -105,6 +103,8 @@ isds = { version = "0.1.0", features = ["serde"] }
 `/DS/vodz` uses the selected environment's `ws2` host and SOAP 1.2. The other operations use `ws1` and SOAP 1.1.
 
 `VerifyMessage` is intentionally not presented as pre-send validation: the current ISDS documentation describes it as obsolete hash retrieval.
+
+Pure response models are `#[non_exhaustive]`, allowing new ISDS response fields without breaking downstream code. Their public fields remain directly readable. Shared request/response models such as `DataBox` and `MessageMetadata` remain constructible for queries and outgoing messages.
 
 ## Delivery and inbox safety
 
@@ -121,6 +121,18 @@ Message IDs are opaque and not chronologically ordered. List offsets start at 1;
 
 Messages in states 4 or 5 cannot yet be downloaded through `MessageDownload`; ISDS can return `1222`. Delivery processing can also return `3006` to a received-list call. Applications should implement bounded, operation-aware retry policies themselves.
 
+## Message modes
+
+`send_message` and `download_message` both take `Option<MessageMode>`:
+
+| Mode | Sending | Downloading |
+| --- | --- | --- |
+| `None` | Select standard or large automatically from the decoded-attachment threshold | Read the envelope, then select the appropriate download |
+| `Some(MessageMode::Standard)` | Force `CreateMessage` | Call `MessageDownload` directly |
+| `Some(MessageMode::Large)` | Force sequential uploads and `CreateBigMessage` | Call `BigMessageDownload` directly |
+
+Automatic download performs two service requests. Forced standard or large download performs one, which is useful when `MessageRecord::is_large_message` is already known.
+
 ## Sending and ambiguous outcomes
 
 `send_message` and `mark_message_downloaded` are never automatically retried. A timeout or connection failure during sending has an **ambiguous outcome**: ISDS may have accepted the message. Reconcile using sent-message queries before submitting the same content again.
@@ -131,7 +143,7 @@ For VoDZ, the client uploads attachments sequentially and verifies returned SHA-
 
 All messages and downloads are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 256 MiB and is configurable with `ClientBuilder::max_response_bytes`. MTOM/XOP and streaming attachments are deferred.
 
-`download_message` automatically checks the standalone envelope and selects ordinary or VoDZ download. It performs two service requests. When a message-list record already supplies the `is_large_message` flag, call `download_received_message` or `download_large_message` directly to avoid the envelope request. Both download paths decode inline `dmFile` attachments returned by ISDS.
+Both standard and large downloads decode the inline `dmFile` attachments returned by ISDS.
 
 Successful parsing, message download, and `GetDeliveryInfo` do **not** constitute local XMLDSig/CMS/CAdES verification. Signed ZFO operations are deferred.
 

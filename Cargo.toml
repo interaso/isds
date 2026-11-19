@@ -1,0 +1,26 @@
+[package]
+name = "isds"
+version = "0.1.0"
+edition = "2024"
+description = "Async high-level client for Czech ISDS data boxes"
+
+[dependencies]
+base64 = "0.23"
+bytes = "1"
+futures-util = "0.3"
+jiff = "1"
+mime = "0.3"
+quick-xml = "0.42"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
+roxmltree = "0.21"
+secrecy = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+uuid = { version = "1", features = ["v4"] }
+wiremock = "0.6"
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"

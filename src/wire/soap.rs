@@ -214,6 +214,22 @@ pub(crate) fn required_text<'a, 'input>(
         .ok_or_else(|| Error::invalid_response(format!("required XML element {name} is missing")))
 }
 
+pub(crate) fn required_text_or_empty<'a, 'input>(
+    node: Node<'a, 'input>,
+    namespace: &str,
+    name: &str,
+) -> Result<&'a str> {
+    let element = child(node, namespace, name).ok_or_else(|| {
+        Error::invalid_response(format!("required XML element {name} is missing"))
+    })?;
+    if is_nil(element) {
+        return Err(Error::invalid_response(format!(
+            "required XML element {name} is nil"
+        )));
+    }
+    Ok(element.text().unwrap_or(""))
+}
+
 pub(crate) fn status(node: Node<'_, '_>, prefix: &str) -> Result<Status> {
     let status_name = format!("{prefix}Status");
     let code_name = format!("{prefix}StatusCode");

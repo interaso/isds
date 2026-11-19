@@ -2,6 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use bytes::Bytes;
+use jiff::Timestamp;
 use mime::Mime;
 
 use crate::error::{Error, Result};
@@ -93,6 +94,16 @@ impl AttachmentType {
             Self::Other(value) => value,
         }
     }
+
+    pub(crate) fn from_raw(value: &str) -> Self {
+        match value {
+            "main" => Self::Main,
+            "enclosure" => Self::Enclosure,
+            "signature" => Self::Signature,
+            "meta" => Self::Meta,
+            value => Self::Other(value.to_owned()),
+        }
+    }
 }
 
 /// A fully buffered ordinary-message attachment.
@@ -104,6 +115,7 @@ pub struct Attachment {
     description: String,
     mime_type: Mime,
     content: Bytes,
+    xml_element: bool,
     meta_type: AttachmentType,
     guid: Option<String>,
     up_file_guid: Option<String>,
@@ -117,11 +129,22 @@ impl Attachment {
             description: description.into(),
             mime_type,
             content: content.into(),
+            xml_element: false,
             meta_type: AttachmentType::Enclosure,
             guid: None,
             up_file_guid: None,
             format: None,
         }
+    }
+
+    /// Creates an attachment from the contents of an ISDS `dmXMLContent` element.
+    ///
+    /// When sent through this crate, the same XML bytes are encoded using the
+    /// schema's equivalent `dmEncodedContent` choice.
+    pub fn xml(description: impl Into<String>, mime_type: Mime, xml: impl Into<String>) -> Self {
+        let mut attachment = Self::new(description, mime_type, Bytes::from(xml.into()));
+        attachment.xml_element = true;
+        attachment
     }
 
     /// Creates a main-document attachment with binary content.
@@ -174,6 +197,15 @@ impl Attachment {
         &self.content
     }
 
+    /// Returns the XML source when this attachment used `dmXMLContent`.
+    pub fn xml_content(&self) -> Option<&str> {
+        if self.xml_element {
+            std::str::from_utf8(&self.content).ok()
+        } else {
+            None
+        }
+    }
+
     /// Returns the ISDS attachment role.
     pub fn meta_type(&self) -> &AttachmentType {
         &self.meta_type
@@ -202,6 +234,7 @@ impl fmt::Debug for Attachment {
             .field("description", &self.description)
             .field("mime_type", &self.mime_type)
             .field("content_length", &self.content.len())
+            .field("xml_element", &self.xml_element)
             .field("meta_type", &self.meta_type)
             .field("guid", &self.guid)
             .field("up_file_guid", &self.up_file_guid)
@@ -308,4 +341,232 @@ impl OutgoingMessage {
 pub struct SentMessage {
     /// ID assigned by ISDS.
     pub id: MessageId,
+}
+
+/// A message state returned by ISDS.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum MessageState {
+    /// Submitted (`1`).
+    Submitted,
+    /// Submission timestamp assigned (`2`).
+    SubmissionTimestamped,
+    /// Rejected by antivirus processing (`3`).
+    AntivirusRejected,
+    /// Placed in the recipient databox but not necessarily legally delivered (`4`).
+    PlacedInRecipientBox,
+    /// Delivered by legal fiction (`5`).
+    DeliveredByFiction,
+    /// Delivered by authorized login (`6`).
+    DeliveredByLogin,
+    /// Marked as read (`7`).
+    Read,
+    /// Undeliverable (`8`).
+    Undeliverable,
+    /// Erased (`9`).
+    Erased,
+    /// Stored in Datový trezor (`10`).
+    InDataVault,
+    /// A state introduced after this crate version.
+    Unknown(i32),
+}
+
+impl MessageState {
+    /// Returns the numeric ISDS state code.
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Submitted => 1,
+            Self::SubmissionTimestamped => 2,
+            Self::AntivirusRejected => 3,
+            Self::PlacedInRecipientBox => 4,
+            Self::DeliveredByFiction => 5,
+            Self::DeliveredByLogin => 6,
+            Self::Read => 7,
+            Self::Undeliverable => 8,
+            Self::Erased => 9,
+            Self::InDataVault => 10,
+            Self::Unknown(code) => code,
+        }
+    }
+
+    pub(crate) fn from_code(code: i32) -> Self {
+        match code {
+            1 => Self::Submitted,
+            2 => Self::SubmissionTimestamped,
+            3 => Self::AntivirusRejected,
+            4 => Self::PlacedInRecipientBox,
+            5 => Self::DeliveredByFiction,
+            6 => Self::DeliveredByLogin,
+            7 => Self::Read,
+            8 => Self::Undeliverable,
+            9 => Self::Erased,
+            10 => Self::InDataVault,
+            code => Self::Unknown(code),
+        }
+    }
+}
+
+/// Query and paging parameters for sent- or received-message lists.
+///
+/// `from` and `to` filter `dmDeliveryTime`, not submission or acceptance time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageListQuery {
+    /// Optional inclusive lower delivery-time bound.
+    pub from: Option<Timestamp>,
+    /// Optional upper delivery-time bound.
+    pub to: Option<Timestamp>,
+    /// Sender or recipient organizational-unit number, depending on the operation.
+    pub organization_unit_number: Option<i64>,
+    /// States to include; `None` sends the ISDS all-permitted-states value `-1`.
+    pub states: Option<Vec<MessageState>>,
+    /// One-based result offset. The default is `1`.
+    pub offset: u64,
+    /// Maximum number of records requested. The default is `1000`.
+    pub limit: u64,
+}
+
+impl Default for MessageListQuery {
+    fn default() -> Self {
+        Self {
+            from: None,
+            to: None,
+            organization_unit_number: None,
+            states: None,
+            offset: 1,
+            limit: 1000,
+        }
+    }
+}
+
+/// The common envelope returned in lists, downloads, and delivery information.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageEnvelope {
+    /// Opaque message ID.
+    pub id: MessageId,
+    /// Sender databox ID.
+    pub sender_id: Option<DataBoxId>,
+    /// Sender display name.
+    pub sender: Option<String>,
+    /// Sender address.
+    pub sender_address: Option<String>,
+    /// Raw sender type code; newer fine-grained values are preserved.
+    pub sender_type: i32,
+    /// Recipient display name.
+    pub recipient: Option<String>,
+    /// Recipient address.
+    pub recipient_address: Option<String>,
+    /// Whether the recipient was ambiguous.
+    pub ambiguous_recipient: Option<bool>,
+    /// Recipient databox ID.
+    pub recipient_id: Option<DataBoxId>,
+    /// Message annotation.
+    pub annotation: Option<String>,
+    /// Shared optional message metadata.
+    pub metadata: MessageMetadata,
+}
+
+/// One entry in a sent- or received-message page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageRecord {
+    /// One-based ordinal within the returned result set.
+    pub ordinal: u32,
+    /// Message envelope.
+    pub envelope: MessageEnvelope,
+    /// Current message state.
+    pub state: MessageState,
+    /// Rounded attachment size in kilobytes.
+    pub attachment_size: Option<i64>,
+    /// Time at which the message entered the databox.
+    pub delivery_time: Option<Timestamp>,
+    /// Time of legal acceptance, if applicable.
+    pub acceptance_time: Option<Timestamp>,
+    /// Optional raw `dmType` attribute.
+    pub message_type: Option<String>,
+    /// Whether this is a VoDZ message.
+    pub vodz: Option<bool>,
+    /// Optional raw special-message flag.
+    pub special_message_flag: Option<i64>,
+}
+
+/// One explicitly requested page of message records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessagePage {
+    /// Returned records.
+    pub records: Vec<MessageRecord>,
+    /// One-based offset used for this page.
+    pub offset: u64,
+    /// Limit used for this page.
+    pub limit: u64,
+}
+
+/// Base64-decoded message hash and its optional algorithm identifier.
+#[derive(Clone, Eq, PartialEq)]
+pub struct MessageHash {
+    /// Raw hash bytes.
+    pub bytes: Bytes,
+    /// Hash algorithm name supplied by ISDS.
+    pub algorithm: Option<String>,
+}
+
+impl fmt::Debug for MessageHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageHash")
+            .field("length", &self.bytes.len())
+            .field("algorithm", &self.algorithm)
+            .finish()
+    }
+}
+
+/// A downloaded ordinary received message.
+#[derive(Clone, Debug)]
+pub struct Message {
+    /// Message envelope.
+    pub envelope: MessageEnvelope,
+    /// Decoded binary or XML attachments.
+    pub attachments: Vec<Attachment>,
+    /// ISDS-computed message hash.
+    pub hash: MessageHash,
+    /// Qualified timestamp token, if present.
+    pub qualified_timestamp: Option<Bytes>,
+    /// Time at which the message entered the databox.
+    pub delivery_time: Option<Timestamp>,
+    /// Time of legal acceptance, if applicable.
+    pub acceptance_time: Option<Timestamp>,
+    /// Current message state.
+    pub state: MessageState,
+    /// Rounded attachment size in kilobytes.
+    pub attachment_size: Option<i64>,
+    /// Optional raw `dmType` attribute.
+    pub message_type: Option<String>,
+    /// Optional raw special-message flag.
+    pub special_message_flag: Option<i64>,
+}
+
+/// One event in a message's delivery history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeliveryEvent {
+    /// Event timestamp.
+    pub time: Option<Timestamp>,
+    /// Human-readable event description.
+    pub description: Option<String>,
+}
+
+/// Unsigned delivery information for an ordinary sent or received message.
+#[derive(Clone, Debug)]
+pub struct DeliveryInfo {
+    /// Message envelope without attachments.
+    pub envelope: MessageEnvelope,
+    /// ISDS-computed message hash.
+    pub hash: MessageHash,
+    /// Qualified timestamp token.
+    pub qualified_timestamp: Bytes,
+    /// Time at which the message entered the databox.
+    pub delivery_time: Option<Timestamp>,
+    /// Time of legal acceptance, if applicable.
+    pub acceptance_time: Option<Timestamp>,
+    /// Current message state.
+    pub state: MessageState,
+    /// Ordered delivery events.
+    pub events: Vec<DeliveryEvent>,
 }

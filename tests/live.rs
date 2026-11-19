@@ -96,6 +96,17 @@ async fn authenticates_and_queries_all_test_accounts() -> LiveResult {
             .credit_info(&CreditQuery::current(identity.box_id.clone()))
             .await?;
         assert!(credit.events.is_empty());
+
+        let today = jiff::ZonedDateTime::now().date();
+        let history_start = today.checked_sub(Span::new().days(7))?;
+        identity
+            .client
+            .credit_info(&CreditQuery::history(
+                identity.box_id.clone(),
+                history_start,
+                today,
+            )?)
+            .await?;
     }
     Ok(())
 }

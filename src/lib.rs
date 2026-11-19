@@ -1,15 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-
-//! A high-level asynchronous client for Czech ISDS databoxes.
-//!
-//! The crate currently supports username/password authentication and ordinary
-//! message operations. Callers must explicitly choose [`Environment::Test`] or
-//! [`Environment::Production`]. No network request is made while constructing a
-//! client.
-//!
-//! `GetListOfReceivedMessages` can cause legal delivery-by-login. Consult the
-//! operation-level documentation before using received-message listing in production.
+#![doc = include_str!("../README.md")]
 
 mod client;
 mod error;

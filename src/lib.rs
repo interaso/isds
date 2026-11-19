@@ -19,6 +19,7 @@ mod wire;
 pub use client::{Client, ClientBuilder, Credentials, Environment};
 pub use error::{Error, Result, ServiceError};
 pub use model::{
-    CreditEvent, CreditEventDetails, CreditInfo, CreditQuery, DataBox, DataBoxId,
-    DataBoxSearchResult, DataBoxState, DataBoxType, DataVaultChange,
+    Attachment, AttachmentType, CreditEvent, CreditEventDetails, CreditInfo, CreditQuery, DataBox,
+    DataBoxId, DataBoxSearchResult, DataBoxState, DataBoxType, DataVaultChange, MessageId,
+    MessageMetadata, OutgoingMessage, PublishOwnId, SentMessage,
 };

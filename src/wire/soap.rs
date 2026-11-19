@@ -51,6 +51,54 @@ pub(crate) fn text_element(writer: &mut Writer<Vec<u8>>, name: &str, value: &str
     Ok(())
 }
 
+pub(crate) fn element(
+    writer: &mut Writer<Vec<u8>>,
+    name: &str,
+    write_contents: impl FnOnce(&mut Writer<Vec<u8>>) -> XmlResult,
+) -> XmlResult {
+    writer.write_event(Event::Start(BytesStart::new(name)))?;
+    write_contents(writer)?;
+    writer.write_event(Event::End(BytesEnd::new(name)))?;
+    Ok(())
+}
+
+pub(crate) fn nillable_text_element(
+    writer: &mut Writer<Vec<u8>>,
+    name: &str,
+    value: Option<&str>,
+) -> XmlResult {
+    match value {
+        Some(value) => text_element(writer, name, value),
+        None => {
+            let mut element = BytesStart::new(name);
+            element.push_attribute(("xsi:nil", "true"));
+            writer.write_event(Event::Empty(element))?;
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn parse<T: std::str::FromStr>(value: &str, name: &str) -> Result<T> {
+    value
+        .trim()
+        .parse()
+        .map_err(|_| Error::invalid_response(format!("{name} has an invalid value")))
+}
+
+pub(crate) fn parse_bool(value: &str, name: &str) -> Result<bool> {
+    match value.trim() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(Error::invalid_response(format!(
+            "{name} is not an XML boolean"
+        ))),
+    }
+}
+
+pub(crate) fn xml_bool(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
 pub(crate) struct Status {
     pub(crate) code: String,
     pub(crate) message: String,
@@ -66,8 +114,12 @@ impl Status {
         if self.is_success() {
             Ok(self)
         } else {
-            Err(ServiceError::new(self.code, self.message, self.reference_number).into())
+            Err(self.into_error())
         }
+    }
+
+    pub(crate) fn into_error(self) -> Error {
+        ServiceError::new(self.code, self.message, self.reference_number).into()
     }
 }
 
@@ -127,12 +179,29 @@ pub(crate) fn child<'a, 'input>(
     })
 }
 
+pub(crate) fn children<'a, 'input>(
+    node: Node<'a, 'input>,
+    namespace: &str,
+    name: &str,
+) -> impl Iterator<Item = Node<'a, 'input>> {
+    node.children().filter(move |candidate| {
+        candidate.is_element()
+            && candidate.tag_name().namespace() == Some(namespace)
+            && candidate.tag_name().name() == name
+    })
+}
+
+pub(crate) fn is_nil(node: Node<'_, '_>) -> bool {
+    node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil"))
+        .is_some_and(|value| value == "true" || value == "1")
+}
+
 pub(crate) fn optional_text<'a, 'input>(
     node: Node<'a, 'input>,
     namespace: &str,
     name: &str,
 ) -> Option<&'a str> {
-    child(node, namespace, name).and_then(|child| child.text())
+    child(node, namespace, name).and_then(|child| if is_nil(child) { None } else { child.text() })
 }
 
 pub(crate) fn required_text<'a, 'input>(

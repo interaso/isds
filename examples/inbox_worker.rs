@@ -30,7 +30,7 @@ where
 
     let mut processed = 0;
     for record in page.records {
-        let message = match client.download_message(&record.envelope.id).await {
+        let message = match client.download_message(&record.envelope.id, None).await {
             Ok(message) => message,
             Err(IsdsError::Service(error)) if error.code() == "1222" => {
                 // Still being processed; do not repeat any message creation.

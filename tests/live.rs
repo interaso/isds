@@ -10,7 +10,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use isds::{
     Attachment, Client, Credentials, CreditQuery, DataBoxId, Environment, Error, Message,
-    MessageId, MessageListQuery, MessageRecord, MessageState, OutgoingMessage,
+    MessageId, MessageListQuery, MessageMode, MessageRecord, MessageState, OutgoingMessage,
 };
 use jiff::{Span, Timestamp};
 use uuid::Uuid;
@@ -123,7 +123,12 @@ async fn sends_downloads_and_marks_messages_for_both_recipients() -> LiveResult 
     let [sender, recipient1, recipient2] = identities()?;
     let started = Timestamp::now().checked_sub(Span::new().minutes(5))?;
 
-    for recipient in [&recipient1, &recipient2] {
+    for (index, recipient) in [&recipient1, &recipient2].into_iter().enumerate() {
+        let mode = if index == 0 {
+            None
+        } else {
+            Some(MessageMode::Standard)
+        };
         let correlation = Uuid::new_v4();
         let annotation = format!("ISDS Rust synthetic test {correlation} — žluťoučký");
         let main_xml = format!(
@@ -143,10 +148,10 @@ async fn sends_downloads_and_marks_messages_for_both_recipients() -> LiveResult 
                 mime::IMAGE_PNG,
                 Bytes::from(png.clone()),
             ));
-        let sent = sender.client.send_message(&outgoing).await?;
+        let sent = sender.client.send_message(&outgoing, mode).await?;
         wait_for_sent(&sender, &sent.id, started).await?;
 
-        let downloaded = download_when_ready(recipient, &sent.id, started).await?;
+        let downloaded = download_when_ready(recipient, &sent.id, started, mode).await?;
         assert_eq!(downloaded.envelope.id, sent.id);
         assert_eq!(
             downloaded.envelope.annotation.as_deref(),
@@ -199,11 +204,11 @@ async fn automatically_sends_and_downloads_a_large_message() -> LiveResult {
         expected_content.clone(),
     ));
 
-    let sent = sender.client.send_message(&outgoing).await?;
+    let sent = sender.client.send_message(&outgoing, None).await?;
     let sent_record = wait_for_sent(&sender, &sent.id, started).await?;
     assert_eq!(sent_record.is_large_message, Some(true));
 
-    let downloaded = download_when_ready(&recipient, &sent.id, started).await?;
+    let downloaded = download_when_ready(&recipient, &sent.id, started, None).await?;
     assert_eq!(downloaded.is_large_message, Some(true));
     assert_eq!(downloaded.attachment_count, Some(1));
     assert_eq!(downloaded.attachments.len(), 1);
@@ -247,6 +252,7 @@ async fn download_when_ready(
     recipient: &Identity,
     id: &MessageId,
     started: Timestamp,
+    mode: Option<MessageMode>,
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let query = MessageListQuery {
         from: Some(started),
@@ -270,7 +276,7 @@ async fn download_when_ready(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                let result = recipient.client.download_message(id).await;
+                let result = recipient.client.download_message(id, mode).await;
                 match result {
                     Ok(message) => return Ok(message),
                     Err(Error::Service(service)) if service.code() == "1222" => {}

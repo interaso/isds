@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let client = common::client()?;
     // The same call automatically handles ordinary and large-volume messages.
     // Acceptance is not delivery; use delivery_info or sent-message lists later.
-    let sent = client.send_message(&message).await?;
+    let sent = client.send_message(&message, None).await?;
     println!("accepted message {}", sent.id);
     Ok(())
 }

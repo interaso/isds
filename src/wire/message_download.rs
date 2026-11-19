@@ -37,7 +37,7 @@ pub(crate) fn decode_download(response: Node<'_, '_>) -> Result<Message> {
         .attribute("specMessFlag")
         .map(|value| soap::parse(value, "specMessFlag"))
         .transpose()?;
-    let vodz = returned
+    let is_large_message = returned
         .attribute("dmVODZ")
         .map(|value| soap::parse_bool(value, "dmVODZ"))
         .transpose()?;
@@ -57,7 +57,7 @@ pub(crate) fn decode_download(response: Node<'_, '_>) -> Result<Message> {
         attachment_size,
         message_type,
         special_message_flag,
-        vodz,
+        is_large_message,
         attachment_count,
     })
 }

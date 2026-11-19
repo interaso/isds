@@ -148,7 +148,7 @@ pub(crate) fn decode_envelope_download(response: Node<'_, '_>) -> Result<Message
     let state = message_common::required_state(returned)?;
     let attachment_size = message_common::optional_i64(returned, "dmAttachmentSize")?;
     let message_type = returned.attribute("dmType").map(str::to_owned);
-    let vodz = returned
+    let is_large_message = returned
         .attribute("dmVODZ")
         .map(|value| soap::parse_bool(value, "dmVODZ"))
         .transpose()?;
@@ -170,7 +170,7 @@ pub(crate) fn decode_envelope_download(response: Node<'_, '_>) -> Result<Message
         state,
         attachment_size,
         message_type,
-        vodz,
+        is_large_message,
         attachment_count,
         special_message_flag,
     })
@@ -244,7 +244,7 @@ fn parse_record(node: Node<'_, '_>) -> Result<MessageRecord> {
     let delivery_time = message_common::optional_timestamp(node, "dmDeliveryTime")?;
     let acceptance_time = message_common::optional_timestamp(node, "dmAcceptanceTime")?;
     let message_type = node.attribute("dmType").map(str::to_owned);
-    let vodz = node
+    let is_large_message = node
         .attribute("dmVODZ")
         .map(|value| soap::parse_bool(value, "dmVODZ"))
         .transpose()?;
@@ -261,7 +261,7 @@ fn parse_record(node: Node<'_, '_>) -> Result<MessageRecord> {
         delivery_time,
         acceptance_time,
         message_type,
-        vodz,
+        is_large_message,
         special_message_flag,
     })
 }
@@ -359,7 +359,7 @@ mod tests {
         let record = &page.records[0];
         assert_eq!(record.state, MessageState::Unknown(42));
         assert_eq!(record.envelope.id.as_str(), "00042");
-        assert_eq!(record.vodz, Some(false));
+        assert_eq!(record.is_large_message, Some(false));
         assert_eq!(record.special_message_flag, Some(4));
     }
 
@@ -385,7 +385,7 @@ mod tests {
         .unwrap();
         assert_eq!(details.envelope.id.as_str(), "00042");
         assert_eq!(details.message_type.as_deref(), Some("E"));
-        assert_eq!(details.vodz, Some(true));
+        assert_eq!(details.is_large_message, Some(true));
         assert_eq!(details.attachment_count, Some(7));
         assert_eq!(details.special_message_flag, Some(2));
         assert_eq!(details.qualified_timestamp.as_ref(), &[4, 5]);

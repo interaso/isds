@@ -161,8 +161,8 @@ pub(crate) fn write_envelope(
         "dmAllowSubstDelivery",
         metadata.allow_substitute_delivery,
     )?;
-    if let Some(ovm) = message.ovm {
-        soap::text_element(writer, "dmOVM", soap::xml_bool(ovm))?;
+    if let Some(public_authority_mode) = message.public_authority_mode {
+        soap::text_element(writer, "dmOVM", soap::xml_bool(public_authority_mode))?;
     }
     if let Some(publish) = message.publish_own_id {
         let mut element = BytesStart::new("dmPublishOwnID");
@@ -251,7 +251,7 @@ mod tests {
             allow_substitute_delivery: Some(false),
             ..MessageMetadata::default()
         };
-        message.ovm = Some(true);
+        message.public_authority_mode = Some(true);
         message.publish_own_id = Some(PublishOwnId {
             enabled: true,
             identification_level: Some(3),
@@ -272,10 +272,14 @@ mod tests {
         let annotation = xml.find("<dmAnnotation").unwrap();
         let legal_title = xml.find("<dmLegalTitleLaw").unwrap();
         let personal = xml.find("<dmPersonalDelivery").unwrap();
-        let ovm = xml.find("<dmOVM").unwrap();
+        let public_authority_mode = xml.find("<dmOVM").unwrap();
         let files = xml.find("<dmFiles").unwrap();
         assert!(recipient < annotation && annotation < legal_title);
-        assert!(legal_title < personal && personal < ovm && ovm < files);
+        assert!(
+            legal_title < personal
+                && personal < public_authority_mode
+                && public_authority_mode < files
+        );
     }
 
     #[test]

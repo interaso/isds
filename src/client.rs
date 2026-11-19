@@ -9,8 +9,9 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::error::{Error, Result};
 use crate::model::{
     CreditInfo, CreditQuery, DataBox, DataBoxId, DataBoxSearchResult, DataBoxState,
+    OutgoingMessage, SentMessage,
 };
-use crate::wire::{credit, databox, soap};
+use crate::wire::{credit, databox, message, soap};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -195,6 +196,22 @@ impl Client {
         .await
     }
 
+    /// Sends one ordinary message using `CreateMessage`.
+    ///
+    /// Success confirms acceptance by ISDS, not delivery. This method never
+    /// retries automatically. A transport failure has an ambiguous outcome:
+    /// reconcile through sent-message queries before submitting the same content
+    /// again.
+    pub async fn send_message(&self, message: &OutgoingMessage) -> Result<SentMessage> {
+        self.execute(
+            Service::MessageOperations,
+            message::create_message_request(message)?,
+            "CreateMessageResponse",
+            message::decode_create_message,
+        )
+        .await
+    }
+
     pub(crate) async fn execute<T>(
         &self,
         service: Service,
@@ -339,6 +356,7 @@ impl ClientBuilder {
 
 #[derive(Clone, Copy)]
 pub(crate) enum Service {
+    MessageOperations,
     DataBoxSearch,
     DataBoxAccess,
 }
@@ -346,6 +364,7 @@ pub(crate) enum Service {
 impl Service {
     fn path(self) -> &'static str {
         match self {
+            Self::MessageOperations => "/DS/dz",
             Self::DataBoxSearch => "/DS/df",
             Self::DataBoxAccess => "/DS/DsManage",
         }
@@ -407,6 +426,16 @@ mod tests {
 
     fn id() -> DataBoxId {
         DataBoxId::new("egtk37z").unwrap()
+    }
+
+    fn outgoing() -> OutgoingMessage {
+        OutgoingMessage::new(DataBoxId::new("n94k37v").unwrap(), "Synthetic test").with_attachment(
+            crate::model::Attachment::main(
+                "test.bin",
+                mime::APPLICATION_OCTET_STREAM,
+                bytes::Bytes::from_static(&[0, 1, 2, 255]),
+            ),
+        )
     }
 
     #[tokio::test]
@@ -651,6 +680,74 @@ mod tests {
                 .current_credit,
             Some(500)
         );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn send_message_uses_message_operations_and_preserves_the_id() {
+        let server = MockServer::start().await;
+        let outgoing = outgoing();
+        let response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><CreateMessageResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmID>00042</dmID><dmStatus><dmStatusCode>0000</dmStatusCode>
+            <dmStatusMessage>Accepted</dmStatusMessage></dmStatus>
+          </CreateMessageResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dz"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message::create_message_request(&outgoing).unwrap()).unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let sent = Client::test_client(server.uri())
+            .send_message(&outgoing)
+            .await
+            .unwrap();
+        assert_eq!(sent.id.as_str(), "00042");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn invalid_outgoing_message_is_not_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut outgoing = outgoing();
+        outgoing.attachments.clear();
+        let error = Client::test_client(server.uri())
+            .send_message(&outgoing)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidInput {
+                field: "attachments",
+                ..
+            }
+        ));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn send_timeout_makes_exactly_one_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(100)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = ClientBuilder::test_at(Environment::Test, server.uri())
+            .timeout(Duration::from_millis(10))
+            .build()
+            .unwrap();
+        let error = client.send_message(&outgoing()).await.unwrap_err();
+        assert!(matches!(error, Error::Transport(_)));
         server.verify().await;
     }
 

@@ -8,10 +8,10 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    CreditInfo, CreditQuery, DataBox, DataBoxId, DataBoxSearchResult, DataBoxState,
-    OutgoingMessage, SentMessage,
+    CreditInfo, CreditQuery, DataBox, DataBoxId, DataBoxSearchResult, DataBoxState, DeliveryInfo,
+    Message, MessageId, MessageListQuery, MessagePage, OutgoingMessage, SentMessage,
 };
-use crate::wire::{credit, databox, message, soap};
+use crate::wire::{credit, databox, message, message_download, message_info, soap};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -212,6 +212,81 @@ impl Client {
         .await
     }
 
+    /// Lists one explicitly requested page of sent messages.
+    ///
+    /// Time bounds filter `dmDeliveryTime`. Offsets are one-based; no automatic
+    /// pagination or hidden additional requests are performed.
+    pub async fn list_sent_messages(&self, query: &MessageListQuery) -> Result<MessagePage> {
+        self.execute(
+            Service::MessageInfo,
+            message_info::list_request(message_info::MessageListKind::Sent, query)?,
+            "GetListOfSentMessagesResponse",
+            |response| message_info::decode_list(response, query),
+        )
+        .await
+    }
+
+    /// Lists one explicitly requested page of received messages.
+    ///
+    /// # Legal side effect
+    ///
+    /// ISDS documents that this operation can trigger **legal delivery-by-login**
+    /// for messages the authenticated user may read. It is not a harmless probe.
+    /// Do not use it as a background production poll without intending that effect.
+    pub async fn list_received_messages(&self, query: &MessageListQuery) -> Result<MessagePage> {
+        self.execute(
+            Service::MessageInfo,
+            message_info::list_request(message_info::MessageListKind::Received, query)?,
+            "GetListOfReceivedMessagesResponse",
+            |response| message_info::decode_list(response, query),
+        )
+        .await
+    }
+
+    /// Downloads an ordinary received message, including decoded attachments.
+    ///
+    /// Messages in states 4 or 5 are not yet downloadable through this operation;
+    /// ISDS can return status `1222`. A received-message list performs the separate
+    /// delivery-by-login step. The returned unsigned XML is parsed for convenience;
+    /// no local cryptographic signature verification is performed.
+    pub async fn download_received_message(&self, id: &MessageId) -> Result<Message> {
+        self.execute(
+            Service::MessageOperations,
+            message_download::download_request(id)?,
+            "MessageDownloadResponse",
+            message_download::decode_download,
+        )
+        .await
+    }
+
+    /// Retrieves unsigned delivery information and ordered delivery events.
+    ///
+    /// This operation does not perform local signature or legal-validity verification.
+    pub async fn delivery_info(&self, id: &MessageId) -> Result<DeliveryInfo> {
+        self.execute(
+            Service::MessageInfo,
+            message_info::delivery_info_request(id)?,
+            "GetDeliveryInfoResponse",
+            message_info::decode_delivery_info,
+        )
+        .await
+    }
+
+    /// Marks a received message as read (state 7) using `MarkMessageAsDownloaded`.
+    ///
+    /// This does not cause legal delivery. Download and durably persist or hand off
+    /// the message before calling this method. The operation is never retried
+    /// automatically.
+    pub async fn mark_message_downloaded(&self, id: &MessageId) -> Result<()> {
+        self.execute(
+            Service::MessageInfo,
+            message_info::mark_downloaded_request(id)?,
+            "MarkMessageAsDownloadedResponse",
+            message_info::decode_mark_downloaded,
+        )
+        .await
+    }
+
     pub(crate) async fn execute<T>(
         &self,
         service: Service,
@@ -357,6 +432,7 @@ impl ClientBuilder {
 #[derive(Clone, Copy)]
 pub(crate) enum Service {
     MessageOperations,
+    MessageInfo,
     DataBoxSearch,
     DataBoxAccess,
 }
@@ -365,6 +441,7 @@ impl Service {
     fn path(self) -> &'static str {
         match self {
             Self::MessageOperations => "/DS/dz",
+            Self::MessageInfo => "/DS/dx",
             Self::DataBoxSearch => "/DS/df",
             Self::DataBoxAccess => "/DS/DsManage",
         }
@@ -747,6 +824,148 @@ mod tests {
             .build()
             .unwrap();
         let error = client.send_message(&outgoing()).await.unwrap_err();
+        assert!(matches!(error, Error::Transport(_)));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn receiving_and_delivery_operations_use_their_contract_endpoints() {
+        let server = MockServer::start().await;
+        let client = Client::test_client(server.uri());
+        let query = MessageListQuery {
+            offset: 1,
+            limit: 10,
+            ..MessageListQuery::default()
+        };
+        let message_id = MessageId::new("00042").unwrap();
+
+        for (kind, operation) in [
+            (message_info::MessageListKind::Sent, "GetListOfSentMessages"),
+            (
+                message_info::MessageListKind::Received,
+                "GetListOfReceivedMessages",
+            ),
+        ] {
+            let response = format!(
+                r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+                  <soap:Body><{operation}Response xmlns="http://isds.czechpoint.cz/v20">
+                    <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+                  </{operation}Response></soap:Body></soap:Envelope>"#
+            );
+            Mock::given(method("POST"))
+                .and(path("/DS/dx"))
+                .and(wiremock::matchers::body_string(
+                    String::from_utf8(message_info::list_request(kind, &query).unwrap()).unwrap(),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_string(response))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let download_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessage><dmDm><dmID>00042</dmID><dmSenderType>31</dmSenderType>
+              <dmFiles><dmFile dmMimeType="application/octet-stream" dmFileMetaType="main"
+                dmFileDescr="data.bin"><dmEncodedContent>AAEC/f7/</dmEncodedContent></dmFile></dmFiles>
+            </dmDm><dmHash>AAEC/f7/</dmHash><dmQTimestamp></dmQTimestamp>
+            <dmMessageStatus>6</dmMessageStatus></dmReturnedMessage>
+          </MessageDownloadResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dz"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_download::download_request(&message_id).unwrap())
+                    .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(download_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let delivery_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><GetDeliveryInfoResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmDelivery><dmDm><dmID>00042</dmID><dmSenderType>31</dmSenderType></dmDm>
+              <dmHash>AAEC/f7/</dmHash><dmQTimestamp>BAU=</dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus><dmEvents><dmEvent>
+                <dmEventDescr>Delivered</dmEventDescr></dmEvent></dmEvents>
+            </dmDelivery>
+          </GetDeliveryInfoResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dx"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_info::delivery_info_request(&message_id).unwrap())
+                    .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(delivery_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mark_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MarkMessageAsDownloadedResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </MarkMessageAsDownloadedResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dx"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_info::mark_downloaded_request(&message_id).unwrap())
+                    .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(mark_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(
+            client
+                .list_sent_messages(&query)
+                .await
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        assert!(
+            client
+                .list_received_messages(&query)
+                .await
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        let downloaded = client.download_received_message(&message_id).await.unwrap();
+        assert_eq!(
+            downloaded.attachments[0].content().as_ref(),
+            &[0, 1, 2, 253, 254, 255]
+        );
+        assert_eq!(
+            client
+                .delivery_info(&message_id)
+                .await
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+        client.mark_message_downloaded(&message_id).await.unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn mark_downloaded_timeout_makes_exactly_one_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(100)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = ClientBuilder::test_at(Environment::Test, server.uri())
+            .timeout(Duration::from_millis(10))
+            .build()
+            .unwrap();
+        let error = client
+            .mark_message_downloaded(&MessageId::new("00042").unwrap())
+            .await
+            .unwrap_err();
         assert!(matches!(error, Error::Transport(_)));
         server.verify().await;
     }

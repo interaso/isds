@@ -667,6 +667,8 @@ dependencies = [
  "reqwest",
  "roxmltree",
  "secrecy",
+ "serde",
+ "serde_json",
  "sha2",
  "sha3",
  "thiserror",

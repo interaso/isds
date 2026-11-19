@@ -16,6 +16,7 @@ The crate supports username/password authentication, ordinary and large-volume m
 - Current credit and typed credit history in exact integer haléře.
 - Structured transport, HTTP, SOAP, ISDS-status, and decoding errors.
 - Redacted credentials and attachment content in debugging output.
+- Optional `serde` feature for serializing `MessageId` and `DataBoxId` as strings and validating them during deserialization.
 
 ## Quick start
 
@@ -69,6 +70,17 @@ The [`examples`](examples/) directory contains compile-checked consumer examples
 | [inbox_worker.rs](examples/inbox_worker.rs) | Delivery-by-login, durable idempotent persistence, mark-read | Integration template; does not make network requests when run |
 
 Running a network example contacts the selected ISDS environment. Sending creates a real data message, and received-message listing can trigger legal delivery-by-login. Use test accounts and non-sensitive content. The download example deliberately leaves mark-read commented out until durable storage is in place.
+
+## Optional serde support
+
+Enable the `serde` feature when embedding IDs in serde-enabled application models:
+
+```toml
+[dependencies]
+isds = { version = "0.1.0", features = ["serde"] }
+```
+
+`MessageId` and `DataBoxId` serialize as strings. Deserialization calls the same validators as their `new` constructors, including the databox Luhn32 check, so invalid IDs cannot be constructed through serde. The feature is disabled by default and does not add serde implementations to unrelated models.
 
 ## Supported operations
 

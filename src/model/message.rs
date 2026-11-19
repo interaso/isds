@@ -10,7 +10,9 @@ use crate::model::DataBoxId;
 
 /// An opaque ISDS message identifier.
 ///
-/// Message IDs are not ordered and must not be treated as integers.
+/// Message IDs are not ordered and must not be treated as integers. With the
+/// `serde` feature, this serializes as a string and deserialization performs the
+/// same validation as [`MessageId::new`].
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MessageId(String);
 
@@ -64,6 +66,27 @@ impl TryFrom<&str> for MessageId {
 
     fn try_from(value: &str) -> Result<Self> {
         Self::new(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for MessageId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for MessageId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
     }
 }
 

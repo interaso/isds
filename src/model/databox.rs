@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use jiff::civil::Date;
+
 use crate::error::{Error, Result};
 
 const ID_ALPHABET: &[u8; 32] = b"abcdefghijkmnpqrstuvwxyz23456789";
@@ -55,6 +57,122 @@ impl TryFrom<&str> for DataBoxId {
     fn try_from(value: &str) -> Result<Self> {
         Self::new(value)
     }
+}
+
+/// A databox type code such as `FO`, `PFO`, `PO`, or `OVM`.
+///
+/// The raw value is retained so newly introduced ISDS subtypes remain usable.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct DataBoxType(String);
+
+impl DataBoxType {
+    /// Creates a non-empty databox type code.
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(Error::invalid_input(
+                "db_type",
+                "databox type must not be empty",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the raw ISDS databox type code.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DataBoxType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DataBoxType {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+/// Databox and owner details, also used as filters for `FindDataBox2`.
+///
+/// Start with [`DataBox::default`] or [`DataBox::by_id`] and set only the desired
+/// search fields. Unset fields are encoded using the schema's required `xsi:nil`
+/// representation. Response fields can be absent when the caller is not allowed
+/// to see them or when they do not apply to the databox type.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DataBox {
+    /// Databox identifier.
+    pub id: Option<DataBoxId>,
+    /// Whether a personal databox is identified through the basic population register.
+    pub aifo_isds: Option<bool>,
+    /// Raw databox type code.
+    pub box_type: Option<DataBoxType>,
+    /// Subject identification number (IČO or a foreign equivalent).
+    pub identification_number: Option<String>,
+    /// All given names of a natural person.
+    pub given_names: Option<String>,
+    /// Surname of a natural person.
+    pub last_name: Option<String>,
+    /// Legal entity or business name.
+    pub firm_name: Option<String>,
+    /// Date of birth.
+    pub birth_date: Option<Date>,
+    /// City of birth.
+    pub birth_city: Option<String>,
+    /// County of birth.
+    pub birth_county: Option<String>,
+    /// Country of birth.
+    pub birth_state: Option<String>,
+    /// RÚIAN address-point code.
+    pub address_code: Option<String>,
+    /// Address city.
+    pub address_city: Option<String>,
+    /// Address district.
+    pub address_district: Option<String>,
+    /// Address street.
+    pub address_street: Option<String>,
+    /// Street orientation or descriptive number.
+    pub address_number_in_street: Option<String>,
+    /// Municipality house number.
+    pub address_number_in_municipality: Option<String>,
+    /// Postal code.
+    pub address_zip_code: Option<String>,
+    /// Address country.
+    pub address_state: Option<String>,
+    /// Nationality or legal-entity registration country.
+    pub nationality: Option<String>,
+    /// Identifier from the Register of Public Authorities.
+    pub ovm_id: Option<String>,
+    /// Raw databox state code; only `1` denotes an active box in owner information.
+    pub state: Option<i64>,
+    /// Whether a non-OVM databox has open addressing enabled.
+    pub open_addressing: Option<bool>,
+    /// Identifier of the superior OVM databox.
+    pub upper_id: Option<DataBoxId>,
+}
+
+impl DataBox {
+    /// Creates an exact-ID databox lookup.
+    pub fn by_id(id: DataBoxId) -> Self {
+        Self {
+            id: Some(id),
+            ..Self::default()
+        }
+    }
+}
+
+/// Results and continuation information from a databox lookup.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DataBoxSearchResult {
+    /// Returned databox records.
+    pub boxes: Vec<DataBox>,
+    /// Whether ISDS reported that additional results were truncated.
+    pub truncated: bool,
 }
 
 /// State code returned by `CheckDataBox`.
@@ -143,5 +261,12 @@ mod tests {
         let state = DataBoxState::from_code(99);
         assert_eq!(state.code(), 99);
         assert!(!state.is_active());
+    }
+
+    #[test]
+    fn databox_type_preserves_future_values() {
+        let value = DataBoxType::new("FUTURE_TYPE").unwrap();
+        assert_eq!(value.as_str(), "FUTURE_TYPE");
+        assert!(DataBoxType::new("").is_err());
     }
 }

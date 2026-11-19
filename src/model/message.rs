@@ -69,6 +69,20 @@ impl TryFrom<&str> for MessageId {
     }
 }
 
+impl TryFrom<String> for MessageId {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl From<MessageId> for String {
+    fn from(id: MessageId) -> Self {
+        id.0
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for MessageId {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>

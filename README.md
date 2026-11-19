@@ -57,6 +57,8 @@ async fn example() -> isds::Result<()> {
 
 `Environment::Production` must be selected explicitly. The client never follows redirects, never disables server certificate validation, and sends Basic credentials only to the fixed environment endpoints.
 
+`MessageId` and `DataBoxId` support `new`, `FromStr`, and `TryFrom` for borrowed or owned strings. String input is always validated. An existing ID can be consumed into its raw string with `String::from(id)` or `id.into()`; use `as_str()` when borrowing is sufficient.
+
 ## Examples
 
 The [`examples`](examples/) directory contains compile-checked consumer examples. Network-enabled examples read credentials from `ISDS_EXAMPLE_USERNAME` and `ISDS_EXAMPLE_PASSWORD`; use your shell or secret manager and never commit their values. They default to `Environment::Test`. Set `ISDS_EXAMPLE_ENVIRONMENT=production` only for intentional production use.

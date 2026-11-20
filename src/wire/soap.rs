@@ -7,6 +7,10 @@ use crate::error::{Error, Result, ServiceError};
 pub(crate) const ISDS_NS: &str = "http://isds.czechpoint.cz/v20";
 const SOAP_11_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 const SOAP_12_NS: &str = "http://www.w3.org/2003/05/soap-envelope";
+// These internal bounds leave ample room for protocol messages while preventing
+// tiny XML inputs from causing disproportionate tree allocation or deep nesting.
+const MAX_XML_NODES: u32 = 65_536;
+const MAX_XML_DEPTH: u32 = 128;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SoapVersion {
@@ -162,12 +166,14 @@ pub(crate) fn decode<T>(
 ) -> Result<T> {
     let xml = std::str::from_utf8(bytes)
         .map_err(|_| Error::invalid_response("response is not UTF-8 XML"))?;
+    preflight(xml)?;
     let options = ParsingOptions {
         allow_dtd: false,
+        nodes_limit: MAX_XML_NODES,
         ..ParsingOptions::default()
     };
     let document = Document::parse_with_options(xml, options)
-        .map_err(|error| Error::invalid_response(format!("malformed XML: {error}")))?;
+        .map_err(|_| Error::invalid_response("malformed XML response"))?;
 
     let envelope = document.root_element();
     let version = match envelope.tag_name().namespace() {
@@ -180,26 +186,103 @@ pub(crate) fn decode<T>(
         }
     };
     require_tag(envelope, version.namespace(), "Envelope")?;
-    let body = child(envelope, version.namespace(), "Body")
+    let body = child(envelope, version.namespace(), "Body")?
         .ok_or_else(|| Error::invalid_response("SOAP Body is missing"))?;
 
-    if let Some(fault) = child(body, version.namespace(), "Fault") {
+    if let Some(fault) = child(body, version.namespace(), "Fault")? {
         let (code_name, message_name) = match version {
             SoapVersion::Soap11 => ("faultcode", "faultstring"),
             SoapVersion::Soap12 => ("Value", "Text"),
         };
-        let code = descendant_text(fault, code_name).unwrap_or("unknown");
-        let message = descendant_text(fault, message_name).unwrap_or("unspecified SOAP fault");
-        return Err(Error::SoapFault {
-            code: code.to_owned(),
-            message: message.to_owned(),
-        });
+        let code = descendant_text(fault, code_name)?.unwrap_or_else(|| "unknown".to_owned());
+        let message = descendant_text(fault, message_name)?
+            .unwrap_or_else(|| "unspecified SOAP fault".to_owned());
+        return Err(Error::SoapFault { code, message });
     }
 
-    let response = child(body, ISDS_NS, operation).ok_or_else(|| {
+    let response = child(body, ISDS_NS, operation)?.ok_or_else(|| {
         Error::invalid_response(format!("SOAP Body does not contain {operation}"))
     })?;
     decode_response(response)
+}
+
+fn preflight(xml: &str) -> Result<()> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut nodes = 0_u32;
+    let mut depth = 0_u32;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(element)) => {
+                nodes = preflight_node(nodes)?;
+                nodes = preflight_attributes(&element, nodes)?;
+                depth = depth.checked_add(1).ok_or_else(|| {
+                    Error::invalid_response("XML response exceeds the nesting limit")
+                })?;
+                if depth > MAX_XML_DEPTH {
+                    return Err(Error::invalid_response(
+                        "XML response exceeds the nesting limit",
+                    ));
+                }
+            }
+            Ok(Event::Empty(element)) => {
+                if depth >= MAX_XML_DEPTH {
+                    return Err(Error::invalid_response(
+                        "XML response exceeds the nesting limit",
+                    ));
+                }
+                nodes = preflight_node(nodes)?;
+                nodes = preflight_attributes(&element, nodes)?;
+            }
+            Ok(Event::End(_)) => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::invalid_response("malformed XML response"))?;
+            }
+            Ok(Event::DocType(_)) => {
+                return Err(Error::invalid_response(
+                    "DTD is not allowed in XML responses",
+                ));
+            }
+            Ok(
+                Event::Text(_)
+                | Event::CData(_)
+                | Event::Comment(_)
+                | Event::Decl(_)
+                | Event::PI(_)
+                | Event::GeneralRef(_),
+            ) => {
+                nodes = preflight_node(nodes)?;
+            }
+            Err(_) => return Err(Error::invalid_response("malformed XML response")),
+        }
+    }
+    if depth != 0 {
+        return Err(Error::invalid_response("malformed XML response"));
+    }
+    Ok(())
+}
+
+fn preflight_node(nodes: u32) -> Result<u32> {
+    let nodes = nodes
+        .checked_add(1)
+        .ok_or_else(|| Error::invalid_response("XML response exceeds the node limit"))?;
+    if nodes > MAX_XML_NODES {
+        return Err(Error::invalid_response(
+            "XML response exceeds the node limit",
+        ));
+    }
+    Ok(nodes)
+}
+
+fn preflight_attributes(element: &BytesStart<'_>, mut nodes: u32) -> Result<u32> {
+    for attribute in element.attributes() {
+        if attribute.is_err() {
+            return Err(Error::invalid_response("malformed XML response"));
+        }
+        nodes = preflight_node(nodes)?;
+    }
+    Ok(nodes)
 }
 
 pub(crate) fn require_tag(node: Node<'_, '_>, namespace: &str, name: &str) -> Result<()> {
@@ -216,12 +299,15 @@ pub(crate) fn child<'a, 'input>(
     node: Node<'a, 'input>,
     namespace: &str,
     name: &str,
-) -> Option<Node<'a, 'input>> {
-    node.children().find(|candidate| {
-        candidate.is_element()
-            && candidate.tag_name().namespace() == Some(namespace)
-            && candidate.tag_name().name() == name
-    })
+) -> Result<Option<Node<'a, 'input>>> {
+    let mut matches = children(node, namespace, name);
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err(Error::invalid_response(format!(
+            "XML element {name} occurs more than once"
+        )));
+    }
+    Ok(first)
 }
 
 pub(crate) fn children<'a, 'input>(
@@ -241,30 +327,38 @@ pub(crate) fn is_nil(node: Node<'_, '_>) -> bool {
         .is_some_and(|value| value == "true" || value == "1")
 }
 
-pub(crate) fn optional_text<'a, 'input>(
-    node: Node<'a, 'input>,
+pub(crate) fn optional_text(
+    node: Node<'_, '_>,
     namespace: &str,
     name: &str,
-) -> Option<&'a str> {
-    child(node, namespace, name).and_then(|child| if is_nil(child) { None } else { child.text() })
+) -> Result<Option<String>> {
+    let Some(element) = child(node, namespace, name)? else {
+        return Ok(None);
+    };
+    let content = simple_content(element, name)?;
+    if is_nil(element) {
+        if !content.is_empty() {
+            return Err(Error::invalid_response(format!(
+                "nil XML element {name} contains text"
+            )));
+        }
+        return Ok(None);
+    }
+    Ok(Some(content))
 }
 
-pub(crate) fn required_text<'a, 'input>(
-    node: Node<'a, 'input>,
-    namespace: &str,
-    name: &str,
-) -> Result<&'a str> {
-    optional_text(node, namespace, name)
+pub(crate) fn required_text(node: Node<'_, '_>, namespace: &str, name: &str) -> Result<String> {
+    optional_text(node, namespace, name)?
         .filter(|text| !text.is_empty())
         .ok_or_else(|| Error::invalid_response(format!("required XML element {name} is missing")))
 }
 
-pub(crate) fn required_text_or_empty<'a, 'input>(
-    node: Node<'a, 'input>,
+pub(crate) fn required_text_or_empty(
+    node: Node<'_, '_>,
     namespace: &str,
     name: &str,
-) -> Result<&'a str> {
-    let element = child(node, namespace, name).ok_or_else(|| {
+) -> Result<String> {
+    let element = child(node, namespace, name)?.ok_or_else(|| {
         Error::invalid_response(format!("required XML element {name} is missing"))
     })?;
     if is_nil(element) {
@@ -272,7 +366,24 @@ pub(crate) fn required_text_or_empty<'a, 'input>(
             "required XML element {name} is nil"
         )));
     }
-    Ok(element.text().unwrap_or(""))
+    simple_content(element, name)
+}
+
+fn simple_content(node: Node<'_, '_>, name: &str) -> Result<String> {
+    let mut content = String::new();
+    for child in node.children() {
+        if child.is_element() {
+            return Err(Error::invalid_response(format!(
+                "XML element {name} contains a nested element"
+            )));
+        }
+        if child.is_text()
+            && let Some(text) = child.text()
+        {
+            content.push_str(text);
+        }
+    }
+    Ok(content)
 }
 
 pub(crate) fn status(node: Node<'_, '_>, prefix: &str) -> Result<Status> {
@@ -280,28 +391,36 @@ pub(crate) fn status(node: Node<'_, '_>, prefix: &str) -> Result<Status> {
     let code_name = format!("{prefix}StatusCode");
     let message_name = format!("{prefix}StatusMessage");
     let reference_name = format!("{prefix}StatusRefNumber");
-    let status = child(node, ISDS_NS, &status_name).ok_or_else(|| {
+    let status = child(node, ISDS_NS, &status_name)?.ok_or_else(|| {
         Error::invalid_response(format!("required XML element {status_name} is missing"))
     })?;
 
     Ok(Status {
-        code: required_text(status, ISDS_NS, &code_name)?.to_owned(),
-        message: optional_text(status, ISDS_NS, &message_name)
-            .unwrap_or_default()
-            .to_owned(),
-        reference_number: optional_text(status, ISDS_NS, &reference_name).map(str::to_owned),
+        code: required_text(status, ISDS_NS, &code_name)?,
+        message: optional_text(status, ISDS_NS, &message_name)?.unwrap_or_default(),
+        reference_number: optional_text(status, ISDS_NS, &reference_name)?,
     })
 }
 
-fn descendant_text<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<&'a str> {
+fn descendant_text(node: Node<'_, '_>, name: &str) -> Result<Option<String>> {
     node.descendants()
         .find(|candidate| candidate.is_element() && candidate.tag_name().name() == name)
-        .and_then(|candidate| candidate.text())
+        .map(|candidate| simple_content(candidate, name))
+        .transpose()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn operation_response(contents: &str) -> String {
+        format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+              <soap:Body><CheckDataBoxResponse xmlns="http://isds.czechpoint.cz/v20"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">{contents}</CheckDataBoxResponse>
+              </soap:Body></soap:Envelope>"#
+        )
+    }
 
     #[test]
     fn text_is_escaped_without_string_interpolation() {
@@ -311,6 +430,95 @@ mod tests {
         .unwrap();
         let xml = String::from_utf8(request).unwrap();
         assert!(xml.contains("Příliš &amp; &lt;žluťoučký&gt;"));
+    }
+
+    #[test]
+    fn simple_content_concatenates_text_and_preserves_nil_and_empty_semantics() {
+        let xml = operation_response(
+            r#"<value>first<!-- ignored --><![CDATA[+second]]><?test ignored?>+third</value>
+              <nil xsi:nil="true"/><empty/>"#,
+        );
+        let (value, nil, missing, empty) =
+            decode(xml.as_bytes(), "CheckDataBoxResponse", |response| {
+                Ok((
+                    required_text(response, ISDS_NS, "value")?,
+                    optional_text(response, ISDS_NS, "nil")?,
+                    optional_text(response, ISDS_NS, "missing")?,
+                    required_text_or_empty(response, ISDS_NS, "empty")?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(value, "first+second+third");
+        assert_eq!(nil, None);
+        assert_eq!(missing, None);
+        assert_eq!(empty, "");
+    }
+
+    #[test]
+    fn simple_content_rejects_nested_elements_and_duplicate_scalars() {
+        let nested = operation_response("<value>before<nested/>after</value>");
+        let error = decode(nested.as_bytes(), "CheckDataBoxResponse", |response| {
+            required_text(response, ISDS_NS, "value").map(|_| ())
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
+
+        let duplicate = operation_response("<value>first</value><value>second</value>");
+        let error = decode(duplicate.as_bytes(), "CheckDataBoxResponse", |response| {
+            optional_text(response, ISDS_NS, "value").map(|_| ())
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
+
+        for invalid_nil in [
+            r#"<value xsi:nil="true">text</value>"#,
+            r#"<value xsi:nil="true"><nested/></value>"#,
+        ] {
+            let xml = operation_response(invalid_nil);
+            let error = decode(xml.as_bytes(), "CheckDataBoxResponse", |response| {
+                optional_text(response, ISDS_NS, "value").map(|_| ())
+            })
+            .unwrap_err();
+            assert!(matches!(error, Error::InvalidResponse { .. }));
+        }
+    }
+
+    #[test]
+    fn duplicate_bodies_responses_and_conflicting_statuses_are_rejected() {
+        let duplicate_body =
+            br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><CheckDataBoxResponse xmlns="http://isds.czechpoint.cz/v20"/></soap:Body>
+          <soap:Body><CheckDataBoxResponse xmlns="http://isds.czechpoint.cz/v20"/></soap:Body>
+        </soap:Envelope>"#;
+        let error = decode(duplicate_body, "CheckDataBoxResponse", |_| Ok(())).unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
+
+        let duplicate_response = operation_response("").replace(
+            "</CheckDataBoxResponse>",
+            "</CheckDataBoxResponse><CheckDataBoxResponse xmlns=\"http://isds.czechpoint.cz/v20\"/>",
+        );
+        let error = decode(
+            duplicate_response.as_bytes(),
+            "CheckDataBoxResponse",
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
+
+        let conflicting_status = operation_response(
+            r#"<dbStatus><dbStatusCode>0000</dbStatusCode></dbStatus>
+              <dbStatus><dbStatusCode>1000</dbStatusCode></dbStatus>"#,
+        );
+        let error = decode(
+            conflicting_status.as_bytes(),
+            "CheckDataBoxResponse",
+            |response| {
+                status(response, "db")?.into_result()?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
     }
 
     #[test]
@@ -324,6 +532,60 @@ mod tests {
     }
 
     #[test]
+    fn parser_limits_reject_excessive_depth_and_node_counts() {
+        let mut deep = String::from(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>"#,
+        );
+        deep.push_str(&"<x>".repeat(MAX_XML_DEPTH as usize));
+        let error = decode(deep.as_bytes(), "CheckDataBoxResponse", |_| Ok(())).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidResponse { ref message } if message == "XML response exceeds the nesting limit"
+        ));
+
+        let mut wide = String::from(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>"#,
+        );
+        wide.push_str(&"<x/>".repeat(MAX_XML_NODES as usize));
+        let error = decode(wide.as_bytes(), "CheckDataBoxResponse", |_| Ok(())).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidResponse { ref message } if message == "XML response exceeds the node limit"
+        ));
+
+        let mut attributes = String::from(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>"#,
+        );
+        attributes.push_str("<x");
+        for index in 0..MAX_XML_NODES {
+            attributes.push_str(&format!(" a{index}=\"\""));
+        }
+        attributes.push_str("/></soap:Body></soap:Envelope>");
+        let error = decode(attributes.as_bytes(), "CheckDataBoxResponse", |_| Ok(())).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidResponse { ref message } if message == "XML response exceeds the node limit"
+        ));
+    }
+
+    #[test]
+    fn parser_errors_do_not_expose_response_tokens() {
+        let mismatched = br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><SENSITIVE_RESPONSE_TOKEN></soap:Body></soap:Envelope>"#;
+        let unbound_prefix = br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><secret:CheckDataBoxResponse>SENSITIVE_RESPONSE_TOKEN</secret:CheckDataBoxResponse>
+          </soap:Body></soap:Envelope>"#;
+        for xml in [mismatched.as_slice(), unbound_prefix.as_slice()] {
+            let error = decode(xml, "CheckDataBoxResponse", |_| Ok(())).unwrap_err();
+            let Error::InvalidResponse { message } = error else {
+                panic!("expected invalid response");
+            };
+            assert_eq!(message, "malformed XML response");
+            assert!(!message.contains("SENSITIVE_RESPONSE_TOKEN"));
+        }
+    }
+
+    #[test]
     fn soap_12_uses_its_own_envelope_and_fault_shape() {
         let request =
             request_with_version(SoapVersion::Soap12, "CreateBigMessage", |_| Ok(())).unwrap();
@@ -331,8 +593,8 @@ mod tests {
         assert!(xml.contains("xmlns:soap=\"http://www.w3.org/2003/05/soap-envelope\""));
 
         let fault = br#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
-          <env:Body><env:Fault><env:Code><env:Value>env:Receiver</env:Value></env:Code>
-            <env:Reason><env:Text xml:lang="en">Temporary failure</env:Text></env:Reason>
+          <env:Body><env:Fault><env:Code><env:Value>env:<!-- split -->Receiver</env:Value></env:Code>
+            <env:Reason><env:Text xml:lang="en">Temporary<!-- split --> <![CDATA[failure]]></env:Text></env:Reason>
           </env:Fault></env:Body></env:Envelope>"#;
         let error = decode(fault, "CreateBigMessageResponse", |_| Ok(())).unwrap_err();
         assert!(matches!(

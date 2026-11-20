@@ -28,14 +28,13 @@ pub(crate) fn credit_info_request(query: &CreditQuery) -> Result<Vec<u8>> {
 
 pub(crate) fn decode_credit_info(response: Node<'_, '_>) -> Result<CreditInfo> {
     soap::status(response, "db")?.into_result()?;
-    let current_credit = soap::optional_text(response, ISDS_NS, "currentCredit")
-        .map(|value| soap::parse(value, "currentCredit"))
+    let current_credit = soap::optional_text(response, ISDS_NS, "currentCredit")?
+        .map(|value| soap::parse(&value, "currentCredit"))
         .transpose()?;
-    let notification_email =
-        soap::optional_text(response, ISDS_NS, "notifEmail").map(str::to_owned);
+    let notification_email = soap::optional_text(response, ISDS_NS, "notifEmail")?;
     let mut events = Vec::new();
 
-    if let Some(records) = soap::child(response, ISDS_NS, "ciRecords") {
+    if let Some(records) = soap::child(response, ISDS_NS, "ciRecords")? {
         for record in soap::children(records, ISDS_NS, "ciRecord") {
             if !soap::is_nil(record) {
                 events.push(parse_credit_event(record)?);
@@ -52,7 +51,7 @@ pub(crate) fn decode_credit_info(response: Node<'_, '_>) -> Result<CreditInfo> {
 
 fn parse_credit_event(node: Node<'_, '_>) -> Result<CreditEvent> {
     let time = soap::parse::<Timestamp>(
-        soap::required_text(node, ISDS_NS, "ciEventTime")?,
+        &soap::required_text(node, ISDS_NS, "ciEventTime")?,
         "ciEventTime",
     )?;
     let event_type = required_parsed::<i64>(node, "ciEventType")?;
@@ -70,26 +69,24 @@ fn parse_credit_event(node: Node<'_, '_>) -> Result<CreditEvent> {
 }
 
 fn parse_event_details(node: Node<'_, '_>) -> Result<CreditEventDetails> {
-    if let Some(transaction_id) = soap::optional_text(node, ISDS_NS, "ciTransID") {
-        return Ok(CreditEventDetails::Transaction {
-            transaction_id: transaction_id.to_owned(),
-        });
+    if let Some(transaction_id) = soap::optional_text(node, ISDS_NS, "ciTransID")? {
+        return Ok(CreditEventDetails::Transaction { transaction_id });
     }
 
-    if soap::child(node, ISDS_NS, "ciRecipientID").is_some()
-        || soap::child(node, ISDS_NS, "ciPDZID").is_some()
+    if soap::child(node, ISDS_NS, "ciRecipientID")?.is_some()
+        || soap::child(node, ISDS_NS, "ciPDZID")?.is_some()
     {
         let recipient = soap::required_text(node, ISDS_NS, "ciRecipientID")?;
         let recipient_id = DataBoxId::new(recipient)
             .map_err(|_| Error::invalid_response("ciRecipientID is not a valid databox ID"))?;
-        let postal_message_id = soap::required_text(node, ISDS_NS, "ciPDZID")?.to_owned();
+        let postal_message_id = soap::required_text(node, ISDS_NS, "ciPDZID")?;
         return Ok(CreditEventDetails::PostalMessage {
             recipient_id,
             postal_message_id,
         });
     }
 
-    if soap::child(node, ISDS_NS, "ciNewCapacity").is_some() {
+    if soap::child(node, ISDS_NS, "ciNewCapacity")?.is_some() {
         return Ok(CreditEventDetails::DataVault(DataVaultChange {
             new_capacity: required_parsed(node, "ciNewCapacity")?,
             new_from: required_parsed::<Date>(node, "ciNewFrom")?,
@@ -97,26 +94,24 @@ fn parse_event_details(node: Node<'_, '_>) -> Result<CreditEventDetails> {
             old_capacity: optional_parsed(node, "ciOldCapacity")?,
             old_from: optional_parsed(node, "ciOldFrom")?,
             old_to: optional_parsed(node, "ciOldTo")?,
-            done_by: soap::optional_text(node, ISDS_NS, "ciDoneBy").map(str::to_owned),
+            done_by: soap::optional_text(node, ISDS_NS, "ciDoneBy")?,
         }));
     }
 
-    if let Some(done_by) = soap::optional_text(node, ISDS_NS, "ciDoneBy") {
-        return Ok(CreditEventDetails::Administrative {
-            done_by: done_by.to_owned(),
-        });
+    if let Some(done_by) = soap::optional_text(node, ISDS_NS, "ciDoneBy")? {
+        return Ok(CreditEventDetails::Administrative { done_by });
     }
 
     Ok(CreditEventDetails::Unknown)
 }
 
 fn required_parsed<T: std::str::FromStr>(node: Node<'_, '_>, name: &str) -> Result<T> {
-    soap::parse(soap::required_text(node, ISDS_NS, name)?, name)
+    soap::parse(&soap::required_text(node, ISDS_NS, name)?, name)
 }
 
 fn optional_parsed<T: std::str::FromStr>(node: Node<'_, '_>, name: &str) -> Result<Option<T>> {
-    soap::optional_text(node, ISDS_NS, name)
-        .map(|value| soap::parse(value, name))
+    soap::optional_text(node, ISDS_NS, name)?
+        .map(|value| soap::parse(&value, name))
         .transpose()
 }
 

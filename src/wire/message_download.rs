@@ -12,21 +12,20 @@ pub(crate) fn download_request(id: &MessageId) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn decode_download(response: Node<'_, '_>) -> Result<Message> {
-    if soap::child(response, ISDS_NS, "dmStatus").is_some() {
+    if soap::child(response, ISDS_NS, "dmStatus")?.is_some() {
         soap::status(response, "dm")?.into_result()?;
     }
-    let returned = soap::child(response, ISDS_NS, "dmReturnedMessage")
+    let returned = soap::child(response, ISDS_NS, "dmReturnedMessage")?
         .filter(|node| !soap::is_nil(*node))
         .ok_or_else(|| Error::invalid_response("dmReturnedMessage is missing"))?;
-    let contents = soap::child(returned, ISDS_NS, "dmDm")
+    let contents = soap::child(returned, ISDS_NS, "dmDm")?
         .ok_or_else(|| Error::invalid_response("dmReturnedMessage/dmDm is missing"))?;
 
     let envelope = message_common::parse_envelope(contents)?;
     let attachments = message_common::parse_attachments(contents)?;
     let hash = message_common::parse_hash(returned)?;
-    let qualified_timestamp = soap::child(returned, ISDS_NS, "dmQTimestamp")
-        .filter(|node| !soap::is_nil(*node))
-        .map(|node| message_common::decode_base64(node.text().unwrap_or(""), "dmQTimestamp"))
+    let qualified_timestamp = soap::optional_text(returned, ISDS_NS, "dmQTimestamp")?
+        .map(|value| message_common::decode_base64(&value, "dmQTimestamp"))
         .transpose()?;
     let delivery_time = message_common::optional_timestamp(returned, "dmDeliveryTime")?;
     let acceptance_time = message_common::optional_timestamp(returned, "dmAcceptanceTime")?;
@@ -39,8 +38,17 @@ pub(crate) fn decode_download(response: Node<'_, '_>) -> Result<Message> {
         .transpose()?;
     let attachment_count = returned
         .attribute("attsNum")
-        .map(|value| soap::parse(value, "attsNum"))
+        .map(|value| soap::parse::<u32>(value, "attsNum"))
         .transpose()?;
+    if let Some(expected) = attachment_count {
+        let actual = u32::try_from(attachments.len())
+            .map_err(|_| Error::invalid_response("decoded attachment count exceeds u32"))?;
+        if expected != actual {
+            return Err(Error::invalid_response(
+                "attsNum does not match the decoded attachment count",
+            ));
+        }
+    }
 
     Ok(Message {
         envelope,
@@ -69,7 +77,7 @@ mod tests {
     const RESPONSE: &str = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
       <soap:Body><MessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-        <dmReturnedMessage dmType="O" specMessFlag="9"><dmDm>
+        <dmReturnedMessage dmType="O" specMessFlag="9" attsNum="2"><dmDm>
           <dmID>00042</dmID><dbIDSender>egtk37z</dbIDSender><dmSender>Sender</dmSender>
           <dmSenderType>31</dmSenderType><dbIDRecipient>n94k37v</dbIDRecipient>
           <dmAnnotation>Synthetic message</dmAnnotation><dmPersonalDelivery>false</dmPersonalDelivery>
@@ -109,6 +117,7 @@ mod tests {
         assert_eq!(message.state, MessageState::DeliveredByLogin);
         assert_eq!(message.message_type.as_deref(), Some("O"));
         assert_eq!(message.special_message_flag, Some(9));
+        assert_eq!(message.attachment_count, Some(2));
         assert_eq!(message.hash.algorithm.as_deref(), Some("SHA-256"));
         assert_eq!(
             message.hash.bytes,
@@ -123,9 +132,59 @@ mod tests {
         );
         assert_eq!(
             message.attachments[1].xml_content(),
-            Some(r#"<note xmlns="urn:example"><value>A&amp;B</value></note>"#)
+            Some(
+                r#"<note xmlns="urn:example" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><value>A&amp;B</value></note>"#
+            )
         );
         assert_eq!(message.attachments[1].guid(), Some("guid-1"));
+    }
+
+    #[test]
+    fn fragmented_base64_is_concatenated_before_decoding() {
+        let fragmented = RESPONSE.replace(
+            "AAEC\n              /f7/",
+            "AA<!-- split -->EC<![CDATA[\n              /f7/]]>",
+        );
+        let message = soap::decode(
+            fragmented.as_bytes(),
+            "MessageDownloadResponse",
+            decode_download,
+        )
+        .unwrap();
+        assert_eq!(
+            message.attachments[0].content(),
+            &Bytes::from_static(&[0, 1, 2, 253, 254, 255])
+        );
+    }
+
+    #[test]
+    fn attachment_count_mismatch_is_rejected() {
+        let invalid = RESPONSE.replace("attsNum=\"2\"", "attsNum=\"1\"");
+        let error = soap::decode(
+            invalid.as_bytes(),
+            "MessageDownloadResponse",
+            decode_download,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
+    }
+
+    #[test]
+    fn duplicate_file_and_returned_message_containers_are_rejected() {
+        let duplicate_files = RESPONSE.replace("</dmFiles>", "</dmFiles><dmFiles/>");
+        let duplicate_returned = RESPONSE.replace(
+            "</dmReturnedMessage>",
+            "</dmReturnedMessage><dmReturnedMessage/>",
+        );
+        for invalid in [duplicate_files, duplicate_returned] {
+            let error = soap::decode(
+                invalid.as_bytes(),
+                "MessageDownloadResponse",
+                decode_download,
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::InvalidResponse { .. }));
+        }
     }
 
     #[test]

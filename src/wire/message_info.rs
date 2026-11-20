@@ -62,7 +62,7 @@ pub(crate) fn list_request(kind: MessageListKind, query: &MessageListQuery) -> R
 pub(crate) fn decode_list(response: Node<'_, '_>, query: &MessageListQuery) -> Result<MessagePage> {
     soap::status(response, "dm")?.into_result()?;
     let mut records = Vec::new();
-    if let Some(array) = soap::child(response, ISDS_NS, "dmRecords") {
+    if let Some(array) = soap::child(response, ISDS_NS, "dmRecords")? {
         for record in soap::children(array, ISDS_NS, "dmRecord") {
             records.push(parse_record(record)?);
         }
@@ -81,30 +81,30 @@ pub(crate) fn delivery_info_request(id: &MessageId) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn decode_delivery_info(response: Node<'_, '_>) -> Result<DeliveryInfo> {
-    if soap::child(response, ISDS_NS, "dmStatus").is_some() {
+    if soap::child(response, ISDS_NS, "dmStatus")?.is_some() {
         soap::status(response, "dm")?.into_result()?;
     }
-    let delivery = soap::child(response, ISDS_NS, "dmDelivery")
+    let delivery = soap::child(response, ISDS_NS, "dmDelivery")?
         .filter(|node| !soap::is_nil(*node))
         .ok_or_else(|| Error::invalid_response("dmDelivery is missing"))?;
-    let contents = soap::child(delivery, ISDS_NS, "dmDm")
+    let contents = soap::child(delivery, ISDS_NS, "dmDm")?
         .ok_or_else(|| Error::invalid_response("dmDelivery/dmDm is missing"))?;
     let envelope = message_common::parse_envelope(contents)?;
     let hash = message_common::parse_hash(delivery)?;
     let qualified_timestamp = message_common::decode_base64(
-        soap::required_text_or_empty(delivery, ISDS_NS, "dmQTimestamp")?,
+        &soap::required_text_or_empty(delivery, ISDS_NS, "dmQTimestamp")?,
         "dmQTimestamp",
     )?;
     let delivery_time = message_common::optional_timestamp(delivery, "dmDeliveryTime")?;
     let acceptance_time = message_common::optional_timestamp(delivery, "dmAcceptanceTime")?;
     let state = message_common::required_state(delivery)?;
-    let events_node = soap::child(delivery, ISDS_NS, "dmEvents")
+    let events_node = soap::child(delivery, ISDS_NS, "dmEvents")?
         .ok_or_else(|| Error::invalid_response("dmEvents is missing"))?;
     let mut events = Vec::new();
     for event in soap::children(events_node, ISDS_NS, "dmEvent") {
         events.push(DeliveryEvent {
             time: message_common::optional_timestamp(event, "dmEventTime")?,
-            description: soap::optional_text(event, ISDS_NS, "dmEventDescr").map(str::to_owned),
+            description: soap::optional_text(event, ISDS_NS, "dmEventDescr")?,
         });
     }
     if events.is_empty() {
@@ -129,18 +129,18 @@ pub(crate) fn envelope_download_request(id: &MessageId) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn decode_envelope_download(response: Node<'_, '_>) -> Result<MessageEnvelopeDetails> {
-    if soap::child(response, ISDS_NS, "dmStatus").is_some() {
+    if soap::child(response, ISDS_NS, "dmStatus")?.is_some() {
         soap::status(response, "dm")?.into_result()?;
     }
-    let returned = soap::child(response, ISDS_NS, "dmReturnedMessageEnvelope")
+    let returned = soap::child(response, ISDS_NS, "dmReturnedMessageEnvelope")?
         .filter(|node| !soap::is_nil(*node))
         .ok_or_else(|| Error::invalid_response("dmReturnedMessageEnvelope is missing"))?;
-    let contents = soap::child(returned, ISDS_NS, "dmDm")
+    let contents = soap::child(returned, ISDS_NS, "dmDm")?
         .ok_or_else(|| Error::invalid_response("dmReturnedMessageEnvelope/dmDm is missing"))?;
     let envelope = message_common::parse_envelope(contents)?;
     let hash = message_common::parse_hash(returned)?;
     let qualified_timestamp = message_common::decode_base64(
-        soap::required_text_or_empty(returned, ISDS_NS, "dmQTimestamp")?,
+        &soap::required_text_or_empty(returned, ISDS_NS, "dmQTimestamp")?,
         "dmQTimestamp",
     )?;
     let delivery_time = message_common::optional_timestamp(returned, "dmDeliveryTime")?;
@@ -228,7 +228,7 @@ fn status_filter(query: &MessageListQuery) -> Result<String> {
 
 fn parse_record(node: Node<'_, '_>) -> Result<MessageRecord> {
     let ordinal = soap::parse::<u32>(
-        soap::required_text(node, ISDS_NS, "dmOrdinal")?,
+        &soap::required_text(node, ISDS_NS, "dmOrdinal")?,
         "dmOrdinal",
     )?;
     if ordinal == 0 {

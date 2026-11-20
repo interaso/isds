@@ -28,6 +28,7 @@ pub(crate) struct UploadedAttachment {
 }
 
 pub(crate) fn upload_attachment_request(attachment: &Attachment) -> Result<Vec<u8>> {
+    message::validate_attachment_type(attachment)?;
     soap::request_with_version(SoapVersion::Soap12, "UploadAttachment", |writer| {
         let mut file = BytesStart::new("dmFile");
         let mime_type = attachment.mime_type().to_string();
@@ -49,7 +50,7 @@ pub(crate) fn decode_upload_attachment(
     attachment: &Attachment,
 ) -> Result<UploadedAttachment> {
     soap::status(response, "dm")?.into_result()?;
-    let attachment_id = soap::required_text(response, ISDS_NS, "dmAttID")?.to_owned();
+    let attachment_id = soap::required_text(response, ISDS_NS, "dmAttID")?;
     let hash1 = required_hash(response, "dmAttHash1")?;
     let hash2 = required_hash(response, "dmAttHash2")?;
     verify_hash(attachment, &hash1)?;
@@ -65,9 +66,9 @@ pub(crate) fn decode_upload_attachment(
 }
 
 fn required_hash(response: Node<'_, '_>, name: &str) -> Result<AttachmentHash> {
-    let node = soap::child(response, ISDS_NS, name)
+    let node = soap::child(response, ISDS_NS, name)?
         .ok_or_else(|| Error::invalid_response(format!("{name} is missing")))?;
-    let value = soap::required_text(response, ISDS_NS, name)?.to_owned();
+    let value = soap::required_text(response, ISDS_NS, name)?;
     let algorithm = node.attribute("AttHashAlg").ok_or_else(|| {
         Error::invalid_response(format!(
             "{name}/AttHashAlg is required for CreateBigMessage"
@@ -199,6 +200,17 @@ mod tests {
       <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
     </UploadAttachmentResponse>"#;
 
+    const LARGE_DOWNLOAD_RESPONSE: &str = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+      <env:Body><BigMessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+        <dmReturnedMessage dmType="E" dmVODZ="true" attsNum="1"><dmDm>
+          <dmID>00042</dmID><dmSenderType>31</dmSenderType>
+          <dmFiles><dmFile dmMimeType="application/octet-stream" dmFileMetaType="main"
+            dmFileDescr="large.bin"><dmEncodedContent>AAEC/f7/</dmEncodedContent></dmFile></dmFiles>
+        </dmDm><dmHash>AAEC/f7/</dmHash><dmQTimestamp></dmQTimestamp>
+        <dmMessageStatus>6</dmMessageStatus></dmReturnedMessage>
+        <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+      </BigMessageDownloadResponse></env:Body></env:Envelope>"#;
+
     use roxmltree::Document;
 
     #[test]
@@ -209,6 +221,18 @@ mod tests {
         assert!(xml.contains("dmMimeType=\"application/octet-stream\""));
         assert!(xml.contains("<dmEncodedContent>AAEC/f7/</dmEncodedContent>"));
         assert!(!xml.contains("dmFileMetaType"));
+    }
+
+    #[test]
+    fn upload_rejects_an_empty_custom_attachment_type() {
+        let attachment = attachment().with_meta_type(AttachmentType::Other(String::new()));
+        assert!(matches!(
+            upload_attachment_request(&attachment),
+            Err(Error::InvalidInput {
+                field: "attachments",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -260,18 +284,8 @@ mod tests {
 
     #[test]
     fn large_download_reuses_inline_attachment_decoding_and_preserves_metadata() {
-        let xml = br#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
-          <env:Body><BigMessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
-            <dmReturnedMessage dmType="E" dmVODZ="true" attsNum="1"><dmDm>
-              <dmID>00042</dmID><dmSenderType>31</dmSenderType>
-              <dmFiles><dmFile dmMimeType="application/octet-stream" dmFileMetaType="main"
-                dmFileDescr="large.bin"><dmEncodedContent>AAEC/f7/</dmEncodedContent></dmFile></dmFiles>
-            </dmDm><dmHash>AAEC/f7/</dmHash><dmQTimestamp></dmQTimestamp>
-            <dmMessageStatus>6</dmMessageStatus></dmReturnedMessage>
-            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
-          </BigMessageDownloadResponse></env:Body></env:Envelope>"#;
         let message = soap::decode(
-            xml,
+            LARGE_DOWNLOAD_RESPONSE.as_bytes(),
             "BigMessageDownloadResponse",
             decode_large_message_download,
         )
@@ -283,5 +297,17 @@ mod tests {
             message.attachments[0].content().as_ref(),
             &[0, 1, 2, 253, 254, 255]
         );
+    }
+
+    #[test]
+    fn large_download_rejects_attachment_count_mismatch() {
+        let invalid = LARGE_DOWNLOAD_RESPONSE.replace("attsNum=\"1\"", "attsNum=\"2\"");
+        let error = soap::decode(
+            invalid.as_bytes(),
+            "BigMessageDownloadResponse",
+            decode_large_message_download,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidResponse { .. }));
     }
 }

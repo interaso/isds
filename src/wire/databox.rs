@@ -28,12 +28,22 @@ pub(crate) fn owner_info_request() -> Result<Vec<u8>> {
 
 pub(crate) fn decode_owner_info(response: Node<'_, '_>) -> Result<DataBox> {
     soap::status(response, "db")?.into_result()?;
-    let owner = soap::child(response, ISDS_NS, "dbOwnerInfo")
+    let owner = soap::child(response, ISDS_NS, "dbOwnerInfo")?
         .ok_or_else(|| Error::invalid_response("dbOwnerInfo is missing"))?;
     parse_data_box(owner)
 }
 
 pub(crate) fn find_data_boxes_request(query: &DataBox) -> Result<Vec<u8>> {
+    if query
+        .box_type
+        .as_ref()
+        .is_some_and(|value| value.as_str().is_empty())
+    {
+        return Err(Error::invalid_input(
+            "box_type",
+            "databox type must not be empty",
+        ));
+    }
     soap::request("FindDataBox2", |writer| {
         soap::element(writer, "dbOwnerInfo", |writer| {
             write_data_box(writer, query)
@@ -54,7 +64,7 @@ pub(crate) fn decode_find_data_boxes(response: Node<'_, '_>) -> Result<DataBoxSe
     };
 
     let mut boxes = Vec::new();
-    if let Some(results) = soap::child(response, ISDS_NS, "dbResults") {
+    if let Some(results) = soap::child(response, ISDS_NS, "dbResults")? {
         for owner in soap::children(results, ISDS_NS, "dbOwnerInfo") {
             boxes.push(parse_data_box(owner)?);
         }
@@ -130,54 +140,54 @@ fn parse_data_box(node: Node<'_, '_>) -> Result<DataBox> {
     Ok(DataBox {
         id: optional_id(node, "dbID")?,
         identified_in_population_register: optional_bool(node, "aifoIsds")?,
-        box_type: soap::optional_text(node, ISDS_NS, "dbType")
+        box_type: soap::optional_text(node, ISDS_NS, "dbType")?
             .map(|value| {
                 DataBoxType::new(value)
                     .map_err(|_| Error::invalid_response("dbType has an invalid value"))
             })
             .transpose()?,
-        identification_number: optional_owned(node, "ic"),
-        given_names: optional_owned(node, "pnGivenNames"),
-        last_name: optional_owned(node, "pnLastName"),
-        firm_name: optional_owned(node, "firmName"),
+        identification_number: optional_owned(node, "ic")?,
+        given_names: optional_owned(node, "pnGivenNames")?,
+        last_name: optional_owned(node, "pnLastName")?,
+        firm_name: optional_owned(node, "firmName")?,
         birth_date: optional_parsed::<Date>(node, "biDate")?,
-        birth_city: optional_owned(node, "biCity"),
-        birth_county: optional_owned(node, "biCounty"),
-        birth_state: optional_owned(node, "biState"),
-        address_code: optional_owned(node, "adCode"),
-        address_city: optional_owned(node, "adCity"),
-        address_district: optional_owned(node, "adDistrict"),
-        address_street: optional_owned(node, "adStreet"),
-        address_number_in_street: optional_owned(node, "adNumberInStreet"),
-        address_number_in_municipality: optional_owned(node, "adNumberInMunicipality"),
-        address_zip_code: optional_owned(node, "adZipCode"),
-        address_state: optional_owned(node, "adState"),
-        nationality: optional_owned(node, "nationality"),
-        public_authority_id: optional_owned(node, "dbIdOVM"),
+        birth_city: optional_owned(node, "biCity")?,
+        birth_county: optional_owned(node, "biCounty")?,
+        birth_state: optional_owned(node, "biState")?,
+        address_code: optional_owned(node, "adCode")?,
+        address_city: optional_owned(node, "adCity")?,
+        address_district: optional_owned(node, "adDistrict")?,
+        address_street: optional_owned(node, "adStreet")?,
+        address_number_in_street: optional_owned(node, "adNumberInStreet")?,
+        address_number_in_municipality: optional_owned(node, "adNumberInMunicipality")?,
+        address_zip_code: optional_owned(node, "adZipCode")?,
+        address_state: optional_owned(node, "adState")?,
+        nationality: optional_owned(node, "nationality")?,
+        public_authority_id: optional_owned(node, "dbIdOVM")?,
         state: optional_parsed::<i64>(node, "dbState")?,
         open_addressing: optional_bool(node, "dbOpenAddressing")?,
         upper_id: optional_id(node, "dbUpperID")?,
     })
 }
 
-fn optional_owned(node: Node<'_, '_>, name: &str) -> Option<String> {
-    soap::optional_text(node, ISDS_NS, name).map(str::to_owned)
+fn optional_owned(node: Node<'_, '_>, name: &str) -> Result<Option<String>> {
+    soap::optional_text(node, ISDS_NS, name)
 }
 
 fn optional_parsed<T: std::str::FromStr>(node: Node<'_, '_>, name: &str) -> Result<Option<T>> {
-    soap::optional_text(node, ISDS_NS, name)
-        .map(|value| soap::parse(value, name))
+    soap::optional_text(node, ISDS_NS, name)?
+        .map(|value| soap::parse(&value, name))
         .transpose()
 }
 
 fn optional_bool(node: Node<'_, '_>, name: &str) -> Result<Option<bool>> {
-    soap::optional_text(node, ISDS_NS, name)
-        .map(|value| soap::parse_bool(value, name))
+    soap::optional_text(node, ISDS_NS, name)?
+        .map(|value| soap::parse_bool(&value, name))
         .transpose()
 }
 
 fn optional_id(node: Node<'_, '_>, name: &str) -> Result<Option<DataBoxId>> {
-    soap::optional_text(node, ISDS_NS, name)
+    soap::optional_text(node, ISDS_NS, name)?
         .map(|value| {
             DataBoxId::new(value)
                 .map_err(|_| Error::invalid_response(format!("{name} is not a valid databox ID")))
@@ -230,6 +240,28 @@ mod tests {
         let firm_name = xml.find("<firmName").unwrap();
         let upper_id = xml.find("<dbUpperID").unwrap();
         assert!(db_type < firm_name && firm_name < upper_id);
+    }
+
+    #[test]
+    fn empty_custom_databox_type_is_rejected_but_future_codes_are_preserved() {
+        let empty = DataBox {
+            box_type: Some(DataBoxType::Other(String::new())),
+            ..DataBox::default()
+        };
+        assert!(matches!(
+            find_data_boxes_request(&empty),
+            Err(Error::InvalidInput {
+                field: "box_type",
+                ..
+            })
+        ));
+
+        let future = DataBox {
+            box_type: Some(DataBoxType::Other("FUTURE".to_owned())),
+            ..DataBox::default()
+        };
+        let xml = String::from_utf8(find_data_boxes_request(&future).unwrap()).unwrap();
+        assert!(xml.contains("<dbType>FUTURE</dbType>"));
     }
 
     #[test]

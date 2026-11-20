@@ -26,7 +26,7 @@ The crate supports username/password authentication, ordinary and large-volume m
 
 ## Installation
 
-```text
+```sh
 cargo add isds
 ```
 
@@ -36,7 +36,7 @@ The crate is pre-1.0, so API changes may occur between minor releases. Optional 
 
 The client requires a Tokio runtime. Construction performs no network request.
 
-```no_run
+```rust,no_run
 use bytes::Bytes;
 use isds::{
     Attachment, Client, Credentials, DataBoxId, Environment, OutgoingMessage,
@@ -110,7 +110,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 This example honors `RUST_LOG` and otherwise enables debug instrumentation only for `isds`:
 
-```no_run
+```rust,no_run
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -207,7 +207,7 @@ Set these variables through your shell or secret manager; do not commit them:
 
 Run the lifecycle serially:
 
-```text
+```sh
 ISDS_RUN_LIVE_TESTS=1 cargo test --test live -- --ignored --test-threads=1
 ```
 
@@ -215,7 +215,7 @@ The lifecycle sends fresh synthetic messages to both recipients and separately e
 
 ## Development checks
 
-```text
+```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked

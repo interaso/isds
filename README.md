@@ -227,7 +227,11 @@ cargo package --locked --allow-dirty
 
 Schema source URLs and SHA-256 hashes are recorded in [SCHEMAS.md](SCHEMAS.md). Runtime endpoints are selected independently because the official test-hosted WSDLs currently contain production `soap:address` values.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines, [CHANGELOG.md](CHANGELOG.md) for release history, and [RELEASING.md](RELEASING.md) for the manual publication process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [CHANGELOG.md](CHANGELOG.md) for release history.
+
+## Releases
+
+Releases are triggered by pushing a `vX.Y.Z` tag matching the version in `Cargo.toml`. Update the version, README dependency examples, and changelog before tagging. The [release workflow](.github/workflows/release.yml) runs the full offline verification matrix, publishes to crates.io with a suitably scoped `CARGO_REGISTRY_TOKEN` Actions secret, and creates a GitHub release from the matching changelog section. Live tests remain manual and never run in the workflow.
 
 ## Deferred capabilities
 

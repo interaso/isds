@@ -21,10 +21,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Automatically selects ordinary or large-volume download.
     let message = client.download_message(&id, None).await?;
     println!(
-        "message {}: state={:?}, large={}, attachments={}",
+        "message {}: state={:?}, mode={:?}, attachments={}",
         message.envelope.id,
         message.state,
-        message.is_large_message.unwrap_or(false),
+        message.mode,
         message.attachments.len()
     );
     for attachment in &message.attachments {

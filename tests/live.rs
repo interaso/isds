@@ -175,7 +175,7 @@ async fn sends_downloads_and_marks_messages_for_both_recipients() -> LiveResult 
         assert_eq!(delivery.envelope.id, sent.id);
         let envelope = recipient.client.download_message_envelope(&sent.id).await?;
         assert_eq!(envelope.envelope.id, sent.id);
-        assert_ne!(envelope.is_large_message, Some(true));
+        assert_ne!(envelope.mode, Some(MessageMode::Large));
         recipient.client.mark_message_downloaded(&sent.id).await?;
     }
     Ok(())
@@ -206,17 +206,17 @@ async fn automatically_sends_and_downloads_a_large_message() -> LiveResult {
 
     let sent = sender.client.send_message(&outgoing, None).await?;
     let sent_record = wait_for_sent(&sender, &sent.id, started).await?;
-    assert_eq!(sent_record.is_large_message, Some(true));
+    assert_eq!(sent_record.mode, Some(MessageMode::Large));
 
     let downloaded = download_when_ready(&recipient, &sent.id, started, None).await?;
-    assert_eq!(downloaded.is_large_message, Some(true));
+    assert_eq!(downloaded.mode, Some(MessageMode::Large));
     assert_eq!(downloaded.attachment_count, Some(1));
     assert_eq!(downloaded.attachments.len(), 1);
     assert_eq!(downloaded.attachments[0].content(), &expected_content);
 
     let envelope = recipient.client.download_message_envelope(&sent.id).await?;
     assert_eq!(envelope.envelope.id, sent.id);
-    assert_eq!(envelope.is_large_message, Some(true));
+    assert_eq!(envelope.mode, Some(MessageMode::Large));
     assert_eq!(envelope.attachment_count, Some(1));
     let delivery = recipient.client.delivery_info(&sent.id).await?;
     assert_eq!(delivery.envelope.id, sent.id);

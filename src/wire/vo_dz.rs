@@ -171,7 +171,7 @@ pub(crate) fn decode_large_message_download(response: Node<'_, '_>) -> Result<Me
 mod tests {
     use bytes::Bytes;
 
-    use crate::model::DataBoxId;
+    use crate::model::{DataBoxId, MessageMode};
 
     use super::*;
 
@@ -276,7 +276,7 @@ mod tests {
             decode_large_message_download,
         )
         .unwrap();
-        assert_eq!(message.is_large_message, Some(true));
+        assert_eq!(message.mode, Some(MessageMode::Large));
         assert_eq!(message.attachment_count, Some(1));
         assert_eq!(message.attachments.len(), 1);
         assert_eq!(

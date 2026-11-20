@@ -131,7 +131,7 @@ Messages in states 4 or 5 cannot yet be downloaded through `MessageDownload`; IS
 | `Some(MessageMode::Standard)` | Force `CreateMessage` | Call `MessageDownload` directly |
 | `Some(MessageMode::Large)` | Force sequential uploads and `CreateBigMessage` | Call `BigMessageDownload` directly |
 
-Automatic download performs two service requests. Forced standard or large download performs one, which is useful when `MessageRecord::is_large_message` is already known.
+Automatic download performs two service requests. Forced standard or large download performs one, which is useful when `MessageRecord::mode` is already known. `Message`, `MessageRecord`, and `MessageEnvelopeDetails` also expose `mode: Option<MessageMode>`; `None` means ISDS did not supply the mode.
 
 ## Sending and ambiguous outcomes
 

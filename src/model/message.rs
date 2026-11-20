@@ -104,9 +104,10 @@ impl<'de> serde::Deserialize<'de> for MessageId {
     }
 }
 
-/// Explicit standard or large-message behavior for sending and downloading.
+/// Standard or large-message behavior for sending, downloading, and metadata.
 ///
 /// Pass `Some(mode)` to force a mode, or `None` to select it automatically.
+/// Returned messages use the same optional representation when ISDS supplies it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum MessageMode {
@@ -534,8 +535,8 @@ pub struct MessageRecord {
     pub acceptance_time: Option<Timestamp>,
     /// Optional raw `dmType` attribute.
     pub message_type: Option<String>,
-    /// Whether this is a large-volume message.
-    pub is_large_message: Option<bool>,
+    /// Standard or large-message mode, if supplied by ISDS.
+    pub mode: Option<MessageMode>,
     /// Optional raw special-message flag.
     pub special_message_flag: Option<i64>,
 }
@@ -596,8 +597,8 @@ pub struct Message {
     pub message_type: Option<String>,
     /// Optional raw special-message flag.
     pub special_message_flag: Option<i64>,
-    /// Whether this is a large-volume message.
-    pub is_large_message: Option<bool>,
+    /// Standard or large-message mode, if supplied by ISDS.
+    pub mode: Option<MessageMode>,
     /// Total attachment count supplied for a large-volume message.
     pub attachment_count: Option<u32>,
 }
@@ -624,8 +625,8 @@ pub struct MessageEnvelopeDetails {
     pub attachment_size: Option<i64>,
     /// Optional raw `dmType` attribute.
     pub message_type: Option<String>,
-    /// Whether this is a large-volume message.
-    pub is_large_message: Option<bool>,
+    /// Standard or large-message mode, if supplied by ISDS.
+    pub mode: Option<MessageMode>,
     /// Total attachment count supplied for a large-volume message.
     pub attachment_count: Option<u32>,
     /// Optional raw special-message flag.

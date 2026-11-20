@@ -11,6 +11,7 @@ use bytes::Bytes;
 use isds::{
     Attachment, Client, Credentials, CreditQuery, DataBoxId, Environment, Error, Message,
     MessageId, MessageListQuery, MessageMode, MessageRecord, MessageState, OutgoingMessage,
+    ServiceErrorKind,
 };
 use jiff::{Span, Timestamp};
 use uuid::Uuid;
@@ -97,7 +98,7 @@ async fn authenticates_and_queries_all_test_accounts() -> LiveResult {
             .await?;
         assert!(credit.events.is_empty());
 
-        let today = jiff::ZonedDateTime::now().date();
+        let today = jiff::Zoned::now().date();
         let history_start = today.checked_sub(Span::new().days(7))?;
         identity
             .client
@@ -186,7 +187,7 @@ async fn sends_downloads_and_marks_messages_for_both_recipients() -> LiveResult 
 async fn automatically_sends_and_downloads_a_large_message() -> LiveResult {
     if !enabled()? {
         eprintln!(
-            "skipping live VoDZ test: set ISDS_RUN_LIVE_TESTS=1 and the credentials variables"
+            "skipping live large-message test: set ISDS_RUN_LIVE_TESTS=1 and the credentials variables"
         );
         return Ok(());
     }
@@ -196,7 +197,7 @@ async fn automatically_sends_and_downloads_a_large_message() -> LiveResult {
     let expected_content = Bytes::from(vec![b'x'; 20 * 1024 * 1024 + 1]);
     let outgoing = OutgoingMessage::new(
         recipient.box_id.clone(),
-        format!("ISDS Rust automatic VoDZ test {correlation}"),
+        format!("ISDS Rust automatic large-message test {correlation}"),
     )
     .with_attachment(Attachment::main(
         "large.txt",
@@ -279,11 +280,13 @@ async fn download_when_ready(
                 let result = recipient.client.download_message(id, mode).await;
                 match result {
                     Ok(message) => return Ok(message),
-                    Err(Error::Service(service)) if service.code() == "1222" => {}
+                    Err(Error::Service(service))
+                        if service.kind() == ServiceErrorKind::MessageNotDownloadable => {}
                     Err(error) => return Err(error.into()),
                 }
             }
-            Err(Error::Service(service)) if service.code() == "3006" => {}
+            Err(Error::Service(service))
+                if service.kind() == ServiceErrorKind::DeliveryInProgress => {}
             Err(error) => return Err(error.into()),
         }
         tokio::time::sleep(Duration::from_secs(1)).await;

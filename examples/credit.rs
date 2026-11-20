@@ -4,7 +4,7 @@ use std::error::Error;
 use std::io;
 
 use isds::CreditQuery;
-use jiff::{Span, ZonedDateTime};
+use jiff::{Span, Timestamp};
 
 mod common;
 
@@ -21,9 +21,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     println!("current credit: {:?} haléře", current.current_credit);
 
-    // History dates are Czech-local civil dates. Tomorrow includes today's events.
-    let today = ZonedDateTime::now().date();
-    let from = today.checked_sub(Span::new().days(7))?;
+    // Query today and the previous six Europe/Prague civil dates. Tomorrow is
+    // the exclusive upper bound, so today's events are included.
+    let today = Timestamp::now().in_tz("Europe/Prague")?.date();
+    let from = today.checked_sub(Span::new().days(6))?;
     let to = today.checked_add(Span::new().days(1))?;
     let history = client
         .credit_info(&CreditQuery::history(box_id, from, to)?)

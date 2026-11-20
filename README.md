@@ -7,16 +7,16 @@
 
 A high-level asynchronous Rust client for Czech **ISDS / datové schránky**.
 
-The crate supports username/password authentication, ordinary and large-volume messages, databox lookup, and credit information. It uses the canonical `datovka.gov.cz` and `datovka-test.gov.cz` services and does not require `libdatovka` or another native library.
+The crate supports username/password authentication, ordinary and large-volume messages, databox lookup, and credit information. It uses the canonical `datovka.gov.cz` and `datovka-test.gov.cz` services and does not require `libdatovka`. The current `reqwest`/rustls backend uses `aws-lc-rs`/`aws-lc-sys`, which builds bundled native code and may require a supported C/CMake toolchain.
 
 ## Features
 
 - Explicit test or production environment selection.
 - Async, cheaply cloneable `Client` backed by `reqwest` and rustls.
-- One `send_message` API that automatically selects ordinary `CreateMessage` or VoDZ (`UploadAttachment` followed by `CreateBigMessage`).
-- Binary and XML attachments with strict base64 handling and verified VoDZ upload hashes.
+- One `send_message` API that automatically selects ordinary `CreateMessage` or large-message operations (`UploadAttachment` followed by `CreateBigMessage`).
+- Binary and XML attachments with strict base64 handling and verified large-message upload hashes.
 - Sent/received message pages with explicit offsets, limits, time filters, and state masks.
-- Ordinary and VoDZ message download, standalone envelope download, delivery information, delivery events, and mark-read.
+- Standard and large-message download, standalone envelope download, delivery information, delivery events, and mark-read.
 - Exact-ID and criteria-based databox lookup, with descriptive type variants and raw-code fallback for specialized or future types.
 - Current credit and typed credit history in exact integer haléře.
 - Structured transport, HTTP, SOAP, ISDS-status, and decoding errors.
@@ -128,7 +128,7 @@ fn main() {
 
 Each HTTP request has a debug-level `isds.request` span containing the ISDS operation name, fixed service endpoint, and environment. After the response body is read, a debug event records its HTTP status and buffered byte count. Request-transport and response-reading failures also emit debug events. Use `RUST_LOG=isds=debug` to enable these records or a more restrictive filter to silence them.
 
-Credentials, authorization headers, databox and message IDs, XML bodies, and attachment contents are never included at any level. Disabling the default-off feature removes this crate's instrumentation and direct `tracing` dependency; `reqwest` retains its own independent tracing support.
+Credentials, authorization headers, databox and message IDs, XML bodies, and attachment contents are never included at any level. Disabling the default-off feature removes this crate's instrumentation and direct `tracing` dependency. HTTP/TLS dependencies may still emit independent `log` or `tracing` records under their own targets; in particular, `reqwest` uses `log`.
 
 ## Supported operations
 
@@ -159,11 +159,14 @@ Pure response models are `#[non_exhaustive]`, allowing new ISDS response fields 
 A safe consumer workflow is:
 
 1. Discover the received message.
-2. Download it and verify the returned message ID and content.
-3. Durably persist it or hand it to a durable processor.
-4. Only then call `mark_message_downloaded`, which marks the message as read and is separate from legal delivery.
+2. Download it. `Client` validates that the returned message ID matches the requested ID before returning the message.
+3. Verify the message content as required by the application.
+4. Durably persist it or hand it to a durable processor.
+5. Only then call `mark_message_downloaded`, which marks the message as read and is separate from legal delivery.
 
-Message IDs are opaque and not chronologically ordered. List offsets start at 1; the default explicit limit is 1000. Time filters apply to `dmDeliveryTime`, not submission or legal-acceptance timestamps. The crate performs no hidden auto-pagination.
+Message IDs are opaque. `MessageId`'s `Ord` implementation provides deterministic lexicographic ordering for container use only; it never represents chronology or pagination. List offsets start at 1; the default explicit limit is 1000, and the crate performs no hidden auto-pagination.
+
+Public date/time types use `jiff` 0.2 (currently 0.2.46), so downstream `jiff` 0.2 values can be supplied without conversion. Credit-history bounds are Czech-local civil dates with an exclusive upper bound; the credit example explicitly uses `Europe/Prague` and tomorrow to include today. Message-list time filters apply to `dmDeliveryTime`, not submission or legal-acceptance timestamps.
 
 States 4 and 5 are represented by `MessageState::PlacedInRecipientBox` and `MessageState::DeliveredByFiction`, without requiring numeric comparisons. Messages in these states cannot yet be downloaded through `MessageDownload`; ISDS can return `1222`. Delivery processing can also return `3006` to a received-list call. Applications should implement bounded, operation-aware retry policies themselves.
 
@@ -183,11 +186,11 @@ Automatic download performs two service requests. Forced standard or large downl
 
 `send_message` and `mark_message_downloaded` are never automatically retried. A timeout or connection failure during sending has an **ambiguous outcome**: ISDS may have accepted the message. Reconcile using sent-message queries before submitting the same content again.
 
-`send_message` sums decoded attachment bytes. Totals up to and including 20 MiB use ordinary DZ by default; larger totals use VoDZ. Configure the boundary with `ClientBuilder::large_message_threshold_bytes` and the default 100 MiB decoded-attachment maximum with `ClientBuilder::max_attachment_bytes`. Messages above the configured maximum are rejected before any network request.
+`send_message` sums decoded attachment bytes. Totals up to and including 20 MiB use `CreateMessage` by default; larger totals use `UploadAttachment` followed by `CreateBigMessage`. Configure the boundary with `ClientBuilder::large_message_threshold_bytes` and the default 100 MiB decoded-attachment maximum with `ClientBuilder::max_attachment_bytes`. Messages above the configured maximum are rejected before any network request.
 
 The default total request timeout is 30 seconds. For large uploads on slow connections, set a longer timeout with `ClientBuilder::timeout`.
 
-For VoDZ, the client uploads attachments sequentially and verifies returned SHA-256, SHA-512, SHA3-256, or SHA3-512 hashes locally before `CreateBigMessage`. Unknown future hash algorithms remain usable and are checked by ISDS during creation. Unused uploads expire after approximately two hours according to the ISDS guide.
+For large messages, the client uploads attachments sequentially and verifies returned SHA-256, SHA-512, SHA3-256, or SHA3-512 hashes locally before `CreateBigMessage`. Unknown future hash algorithms remain usable and are checked by ISDS during creation. Unused uploads expire after approximately two hours according to the ISDS guide.
 
 All messages and downloads are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 256 MiB and is configurable with `ClientBuilder::max_response_bytes`. MTOM/XOP and streaming attachments are deferred.
 
@@ -226,7 +229,7 @@ Run the lifecycle serially:
 ISDS_RUN_LIVE_TESTS=1 cargo test --test live -- --ignored --test-threads=1
 ```
 
-The lifecycle sends fresh synthetic messages to both recipients and separately exercises automatic VoDZ selection with a 20 MiB + 1 byte attachment, including download and byte comparison. Use only test accounts and non-sensitive content. It never retries a send and never targets production.
+The lifecycle sends fresh synthetic messages to both recipients and separately exercises automatic large-message selection with a 20 MiB + 1 byte attachment, including download and byte comparison. Use only test accounts and non-sensitive content. It never retries a send and never targets production.
 
 ## Development checks
 
@@ -249,7 +252,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md#changelog-and-releases) for development, c
 - Blocking API.
 - Certificate, OTP, and Mobilní klíč authentication.
 - Multi-recipient `CreateMultipleMessage` and partial per-recipient results.
-- MTOM/XOP and streaming attachments; VoDZ currently uses buffered base64 and SOAP 1.2.
+- MTOM/XOP and streaming attachments; large-message operations currently use buffered base64 and SOAP 1.2.
 - Signed ZFO/CMS/CAdES operations and local verification.
 - Administration, password changes, notifications, and archival services.
 - Durable inbox workers, persistence, automatic retries, and credit top-up/payment flows.

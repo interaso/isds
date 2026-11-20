@@ -1,5 +1,19 @@
 use std::fmt;
 
+/// A classified ISDS service status that applications can handle without parsing codes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum ServiceErrorKind {
+    /// The message cannot yet be downloaded (`1222`).
+    MessageNotDownloadable,
+    /// ISDS is still processing delivery (`3006`).
+    DeliveryInProgress,
+    /// A status not classified by this version of the crate.
+    ///
+    /// Use [`ServiceError::code`] to inspect the raw status.
+    Other,
+}
+
 /// An error returned by the ISDS service after a syntactically valid response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceError {
@@ -24,6 +38,18 @@ impl ServiceError {
     /// Returns the untouched ISDS status code, including leading zeroes.
     pub fn code(&self) -> &str {
         &self.code
+    }
+
+    /// Returns a typed classification for selected ISDS status codes.
+    ///
+    /// Unknown and unclassified statuses return [`ServiceErrorKind::Other`];
+    /// the original status remains available through [`ServiceError::code`].
+    pub fn kind(&self) -> ServiceErrorKind {
+        match self.code.as_str() {
+            "1222" => ServiceErrorKind::MessageNotDownloadable,
+            "3006" => ServiceErrorKind::DeliveryInProgress,
+            _ => ServiceErrorKind::Other,
+        }
     }
 
     /// Returns the human-readable message supplied by ISDS.
@@ -124,3 +150,26 @@ impl Error {
 
 /// Result type used by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_error_classification_preserves_the_raw_code() {
+        let cases = [
+            ("1222", ServiceErrorKind::MessageNotDownloadable),
+            ("3006", ServiceErrorKind::DeliveryInProgress),
+            ("0002", ServiceErrorKind::Other),
+            ("future-status", ServiceErrorKind::Other),
+        ];
+
+        for (code, kind) in cases {
+            let error = ServiceError::new(code, "test status", Some("reference".to_owned()));
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.code(), code);
+            assert_eq!(error.message(), "test status");
+            assert_eq!(error.reference_number(), Some("reference"));
+        }
+    }
+}

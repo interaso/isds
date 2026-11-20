@@ -33,16 +33,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          set -euo pipefail
-          version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          if [[ "$RELEASE_TAG" != "v$version" ]]; then
-            echo "::error::Release tag $RELEASE_TAG does not match Cargo.toml version $version"
-            exit 1
-          fi
-          if ! grep -Fq -- "## [$version] - " CHANGELOG.md; then
-            echo "::error::CHANGELOG.md has no dated section for $version"
-            exit 1
-          fi
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          test "$RELEASE_TAG" = "v$version"
+          grep -Fq -- "## [$version] - " CHANGELOG.md
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint all targets and features

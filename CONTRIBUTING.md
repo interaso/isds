@@ -35,6 +35,21 @@ Live tests are optional maintainer checks, never part of CI. They may use only t
 
 The lifecycle sends real test messages and can trigger delivery behavior in the test environment. See [README.md](README.md#live-tests-against-the-official-test-environment) for the required variables and serial test command. Do not point live tests at production accounts.
 
+## Changelog and releases
+
+Record consumer-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md), using categories such as Added, Changed, Fixed, and Removed as appropriate. Do not assign a version or date until the release is being prepared.
+
+Releases are maintainer-only and use the [tag-triggered release workflow](.github/workflows/release.yml):
+
+1. Start from a reviewed `main` branch with passing CI. When protocol behavior or wire dependencies changed, run the official test-environment lifecycle manually.
+2. Update the version in `Cargo.toml` and the dependency examples in `README.md`.
+3. Move the relevant `Unreleased` changelog entries into a `## [X.Y.Z] - YYYY-MM-DD` section, retain an empty `Unreleased` section for future changes, and update the changelog comparison and release links.
+4. Commit and review these changes, then create and push a `vX.Y.Z` tag exactly matching the package version. crates.io releases are immutable, so do not tag until the release is ready.
+5. The workflow validates the tag and changelog, runs the full offline verification matrix and publication dry-run, publishes to crates.io, and creates a GitHub release from the version's changelog section. It never runs live tests.
+6. Verify the published crates.io page, docs.rs build, GitHub release notes, and rendered documentation links.
+
+The GitHub repository must have a suitably scoped `CARGO_REGISTRY_TOKEN` Actions secret with permission to publish the crate. Keep release credentials in the repository's secret store, never in workflow files or other committed content.
+
 ## Licensing
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under the MIT License, without additional terms or conditions.

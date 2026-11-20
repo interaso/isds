@@ -4,7 +4,7 @@ Thank you for contributing to `isds`. Please keep changes focused, document publ
 
 ## Development setup
 
-Install a current stable Rust toolchain with `rustfmt` and Clippy. The crate uses the Rust 2024 edition and forbids unsafe code.
+Install a current stable Rust toolchain with `rustfmt` and Clippy. The crate uses the Rust 2024 edition, supports Rust 1.89 and newer, and forbids unsafe code. Check the declared MSRV after dependency updates.
 
 Run the same offline checks as CI before submitting a change:
 
@@ -18,7 +18,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps --locked
 cargo package --locked --allow-dirty
 ```
 
-The default and all-feature test suites do not contact ISDS. Keep unit and integration tests independent of local credentials and external services. CI also checks each optional feature independently and checks the all-feature crate for `x86_64-unknown-linux-musl` with `musl-gcc`; equivalent local musl checks require the Rust target and a musl C toolchain.
+The default and all-feature test suites do not contact ISDS. Keep unit and integration tests independent of local credentials and external services. CI also checks each optional feature independently, checks all targets and features at Rust 1.89, and checks the all-feature crate for `x86_64-unknown-linux-musl` with `musl-gcc`; equivalent local musl checks require the Rust target and a musl C toolchain.
 
 ## Public API and protocol changes
 

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Updated `sha2` to 0.11 and `sha3` to 0.12; supported attachment hashes retain their existing behavior.
+- Declared Rust 1.89 as the minimum supported Rust version and added all-target/all-feature CI verification at that version.
 
 ### Fixed
 

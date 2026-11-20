@@ -30,7 +30,7 @@ The crate supports username/password authentication, ordinary and large-volume m
 cargo add isds
 ```
 
-The crate is pre-1.0, so API changes may occur between minor releases. Optional ID serialization is enabled with `cargo add isds --features serde`.
+The crate is pre-1.0, so API changes may occur between minor releases. Rust 1.89 or newer is supported. Optional ID serialization is enabled with `cargo add isds --features serde`.
 
 ## Quick start
 

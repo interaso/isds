@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed the redundant package homepage metadata that caused a Cargo warning.
+
 ## [0.1.0] - 2026-11-20
 
 ### Added

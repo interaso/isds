@@ -5,7 +5,6 @@ edition = "2024"
 description = "Async high-level client for Czech ISDS data boxes"
 license = "MIT"
 repository = "https://github.com/interaso/isds"
-homepage = "https://github.com/interaso/isds"
 documentation = "https://docs.rs/isds"
 readme = "README.md"
 keywords = ["isds", "databox", "czech", "soap"]

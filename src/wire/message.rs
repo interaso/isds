@@ -5,7 +5,7 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use roxmltree::Node;
 
 use crate::error::{Error, Result};
-use crate::model::{MessageId, OutgoingMessage, SentMessage};
+use crate::model::{Attachment, MessageId, OutgoingMessage, SentMessage};
 use crate::wire::soap::{self, ISDS_NS};
 
 pub(crate) fn create_message_request(message: &OutgoingMessage) -> Result<Vec<u8>> {
@@ -37,6 +37,9 @@ pub(crate) fn validate_outgoing(message: &OutgoingMessage) -> Result<()> {
             "a message cannot contain more than 100 attachments",
         ));
     }
+    for attachment in &message.attachments {
+        validate_attachment_type(attachment)?;
+    }
     validate_length(&message.annotation, "annotation", 255)?;
     validate_optional_length(
         message.metadata.recipient_reference_number.as_deref(),
@@ -62,6 +65,16 @@ pub(crate) fn validate_outgoing(message: &OutgoingMessage) -> Result<()> {
         return Err(Error::invalid_input(
             "message_type",
             "dmType must contain exactly one character",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_attachment_type(attachment: &Attachment) -> Result<()> {
+    if attachment.meta_type().as_str().is_empty() {
+        return Err(Error::invalid_input(
+            "attachments",
+            "attachment dmFileMetaType must not be empty",
         ));
     }
     Ok(())
@@ -313,6 +326,28 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn empty_custom_attachment_type_is_rejected_but_future_codes_are_preserved() {
+        let mut empty = message();
+        empty.attachments[0] = empty.attachments[0]
+            .clone()
+            .with_meta_type(AttachmentType::Other(String::new()));
+        assert!(matches!(
+            create_message_request(&empty),
+            Err(Error::InvalidInput {
+                field: "attachments",
+                ..
+            })
+        ));
+
+        let mut future = message();
+        future.attachments[0] = future.attachments[0]
+            .clone()
+            .with_meta_type(AttachmentType::Other("future".to_owned()));
+        let xml = String::from_utf8(create_message_request(&future).unwrap()).unwrap();
+        assert!(xml.contains("dmFileMetaType=\"future\""));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::model::{
     Message, MessageEnvelopeDetails, MessageId, MessageListQuery, MessageMode, MessagePage,
     OutgoingMessage, SentMessage,
 };
-use crate::wire::{credit, databox, message, message_download, message_info, soap, vo_dz};
+use crate::wire::{credit, databox, large_message, message, message_download, message_info, soap};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,7 +37,7 @@ impl Environment {
         }
     }
 
-    fn vo_dz_base_url(self) -> &'static str {
+    fn large_message_base_url(self) -> &'static str {
         match self {
             Self::Test => "https://ws2.datovka-test.gov.cz",
             Self::Production => "https://ws2.datovka.gov.cz",
@@ -47,8 +47,8 @@ impl Environment {
 
 /// Username and password used for ISDS HTTP Basic authentication.
 ///
-/// The password is redacted from `Debug` output. Basic credentials are sent on
-/// every request; this authentication method does not establish a cookie session.
+/// The username and password are redacted from `Debug` output. Basic credentials
+/// are sent on every request; this authentication method does not establish a cookie session.
 #[derive(Clone)]
 pub struct Credentials {
     username: String,
@@ -74,7 +74,7 @@ impl fmt::Debug for Credentials {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Credentials")
-            .field("username", &self.username)
+            .field("username", &"[REDACTED]")
             .field("password", &"[REDACTED]")
             .finish()
     }
@@ -189,6 +189,9 @@ impl Client {
     }
 
     /// Looks up at most one databox by its exact identifier.
+    ///
+    /// Callers that need [`DataBoxSearchResult::postal_delivery_restricted`] should use
+    /// [`Client::find_data_boxes`] instead.
     pub async fn find_data_box(&self, id: &DataBoxId) -> Result<Option<DataBox>> {
         let mut result = self.find_data_boxes(&DataBox::by_id(id.clone())).await?;
         if result.truncated {
@@ -268,20 +271,20 @@ impl Client {
         for attachment in &message.attachments {
             let result = self
                 .execute(
-                    Service::VoDzUpload,
-                    vo_dz::upload_attachment_request(attachment)?,
+                    Service::LargeMessageUpload,
+                    large_message::upload_attachment_request(attachment)?,
                     "UploadAttachmentResponse",
-                    |response| vo_dz::decode_upload_attachment(response, attachment),
+                    |response| large_message::decode_upload_attachment(response, attachment),
                 )
                 .await?;
             uploaded.push(result);
         }
 
         self.execute(
-            Service::VoDz,
-            vo_dz::create_large_message_request(message, &uploaded)?,
+            Service::LargeMessage,
+            large_message::create_large_message_request(message, &uploaded)?,
             "CreateBigMessageResponse",
-            vo_dz::decode_create_large_message,
+            large_message::decode_create_large_message,
         )
         .await
     }
@@ -347,23 +350,29 @@ impl Client {
     }
 
     async fn download_standard_message(&self, id: &MessageId) -> Result<Message> {
-        self.execute(
-            Service::MessageOperations,
-            message_download::download_request(id)?,
-            "MessageDownloadResponse",
-            message_download::decode_download,
-        )
-        .await
+        let message = self
+            .execute(
+                Service::MessageOperations,
+                message_download::download_request(id)?,
+                "MessageDownloadResponse",
+                message_download::decode_download,
+            )
+            .await?;
+        ensure_message_id(id, &message.envelope.id)?;
+        Ok(message)
     }
 
     async fn download_large_message(&self, id: &MessageId) -> Result<Message> {
-        self.execute(
-            Service::VoDz,
-            vo_dz::large_message_download_request(id)?,
-            "BigMessageDownloadResponse",
-            vo_dz::decode_large_message_download,
-        )
-        .await
+        let message = self
+            .execute(
+                Service::LargeMessage,
+                large_message::large_message_download_request(id)?,
+                "BigMessageDownloadResponse",
+                large_message::decode_large_message_download,
+            )
+            .await?;
+        ensure_message_id(id, &message.envelope.id)?;
+        Ok(message)
     }
 
     /// Downloads a received-message envelope without attachment content.
@@ -374,26 +383,32 @@ impl Client {
         &self,
         id: &MessageId,
     ) -> Result<MessageEnvelopeDetails> {
-        self.execute(
-            Service::MessageInfo,
-            message_info::envelope_download_request(id)?,
-            "MessageEnvelopeDownloadResponse",
-            message_info::decode_envelope_download,
-        )
-        .await
+        let envelope = self
+            .execute(
+                Service::MessageInfo,
+                message_info::envelope_download_request(id)?,
+                "MessageEnvelopeDownloadResponse",
+                message_info::decode_envelope_download,
+            )
+            .await?;
+        ensure_message_id(id, &envelope.envelope.id)?;
+        Ok(envelope)
     }
 
     /// Retrieves unsigned delivery information and ordered delivery events.
     ///
     /// This operation does not perform local signature or legal-validity verification.
     pub async fn delivery_info(&self, id: &MessageId) -> Result<DeliveryInfo> {
-        self.execute(
-            Service::MessageInfo,
-            message_info::delivery_info_request(id)?,
-            "GetDeliveryInfoResponse",
-            message_info::decode_delivery_info,
-        )
-        .await
+        let delivery = self
+            .execute(
+                Service::MessageInfo,
+                message_info::delivery_info_request(id)?,
+                "GetDeliveryInfoResponse",
+                message_info::decode_delivery_info,
+            )
+            .await?;
+        ensure_message_id(id, &delivery.envelope.id)?;
+        Ok(delivery)
     }
 
     /// Marks a received message as read (state 7) using `MarkMessageAsDownloaded`.
@@ -433,10 +448,10 @@ impl Client {
         response_operation: &str,
         decode_response: impl FnOnce(roxmltree::Node<'_, '_>) -> Result<T>,
     ) -> Result<T> {
-        let base_url = if matches!(service, Service::VoDz | Service::VoDzUpload)
+        let base_url = if matches!(service, Service::LargeMessage | Service::LargeMessageUpload)
             && !self.inner.custom_base_url
         {
-            self.inner.environment.vo_dz_base_url()
+            self.inner.environment.large_message_base_url()
         } else {
             self.inner.base_url.as_str()
         };
@@ -469,6 +484,14 @@ impl Client {
         };
 
         let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(http_status = status.as_u16(), "ISDS authentication failed");
+            return Err(Error::Authentication {
+                status: status.as_u16(),
+            });
+        }
+
         let body = match read_bounded(response, self.inner.max_response_bytes).await {
             Ok(body) => body,
             Err(error) => {
@@ -483,12 +506,6 @@ impl Client {
             response_bytes = body.len(),
             "ISDS response received"
         );
-
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(Error::Authentication {
-                status: status.as_u16(),
-            });
-        }
 
         let decoded = soap::decode(&body, response_operation, decode_response);
         let result = if status.is_success() {
@@ -615,6 +632,7 @@ impl ClientBuilder {
 
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .https_only(https_only)
             .connect_timeout(self.connect_timeout)
             .timeout(self.timeout)
@@ -649,8 +667,8 @@ impl ClientBuilder {
 pub(crate) enum Service {
     MessageOperations,
     MessageInfo,
-    VoDz,
-    VoDzUpload,
+    LargeMessage,
+    LargeMessageUpload,
     DataBoxSearch,
     DataBoxAccess,
 }
@@ -662,19 +680,19 @@ impl Service {
             | Self::MessageInfo
             | Self::DataBoxSearch
             | Self::DataBoxAccess => soap::SoapVersion::Soap11,
-            Self::VoDz | Self::VoDzUpload => soap::SoapVersion::Soap12,
+            Self::LargeMessage | Self::LargeMessageUpload => soap::SoapVersion::Soap12,
         }
     }
 
     fn expect_continue(self) -> bool {
-        matches!(self, Self::VoDzUpload)
+        matches!(self, Self::LargeMessageUpload)
     }
 
     fn path(self) -> &'static str {
         match self {
             Self::MessageOperations => "/DS/dz",
             Self::MessageInfo => "/DS/dx",
-            Self::VoDz | Self::VoDzUpload => "/DS/vodz",
+            Self::LargeMessage | Self::LargeMessageUpload => "/DS/vodz",
             Self::DataBoxSearch => "/DS/df",
             Self::DataBoxAccess => "/DS/DsManage",
         }
@@ -703,6 +721,16 @@ fn use_large_message(
         Some(MessageMode::Standard) => false,
         Some(MessageMode::Large) => true,
         None => total_attachment_bytes > threshold,
+    }
+}
+
+fn ensure_message_id(expected: &MessageId, actual: &MessageId) -> Result<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::invalid_response(
+            "response message ID does not match the requested message ID",
+        ))
     }
 }
 
@@ -911,6 +939,29 @@ mod tests {
         let rendered = error.to_string();
         assert!(!rendered.contains("sentinel-password"));
         assert!(!rendered.contains("private body"));
+    }
+
+    #[tokio::test]
+    async fn authentication_precedes_response_body_limits() {
+        for status in [401, 403] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("x".repeat(1024)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = ClientBuilder::test_at(Environment::Test, server.uri())
+                .max_response_bytes(64)
+                .build()
+                .unwrap();
+
+            let error = client.check_data_box(&id()).await.unwrap_err();
+            assert!(matches!(
+                error,
+                Error::Authentication { status: actual } if actual == status
+            ));
+            server.verify().await;
+        }
     }
 
     #[tokio::test]
@@ -1134,7 +1185,7 @@ mod tests {
           <dmAttHash2 AttHashAlg="SHA3-256">9611923b9b1fe6ba837b2246b1e1a26ac51ecc2af6a2c662acb705fd2e8c4d4b</dmAttHash2>
           <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
         </UploadAttachmentResponse>"#;
-        let uploaded = vo_dz::decode_upload_attachment(
+        let uploaded = large_message::decode_upload_attachment(
             roxmltree::Document::parse(upload_response)
                 .unwrap()
                 .root_element(),
@@ -1154,7 +1205,7 @@ mod tests {
             .and(wiremock::matchers::header("expect", "100-continue"))
             .and(wiremock::matchers::body_string(
                 String::from_utf8(
-                    vo_dz::upload_attachment_request(&outgoing.attachments[0]).unwrap(),
+                    large_message::upload_attachment_request(&outgoing.attachments[0]).unwrap(),
                 )
                 .unwrap(),
             ))
@@ -1172,7 +1223,7 @@ mod tests {
             .and(path("/DS/vodz"))
             .and(wiremock::matchers::body_string(
                 String::from_utf8(
-                    vo_dz::create_large_message_request(&outgoing, &[uploaded]).unwrap(),
+                    large_message::create_large_message_request(&outgoing, &[uploaded]).unwrap(),
                 )
                 .unwrap(),
             ))
@@ -1461,7 +1512,8 @@ mod tests {
                 "application/soap+xml; charset=utf-8",
             ))
             .and(wiremock::matchers::body_string(
-                String::from_utf8(vo_dz::large_message_download_request(&id).unwrap()).unwrap(),
+                String::from_utf8(large_message::large_message_download_request(&id).unwrap())
+                    .unwrap(),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(large_response))
             .expect(2)
@@ -1501,6 +1553,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn downloads_and_delivery_info_reject_mismatched_message_ids() {
+        fn assert_mismatch(error: Error) {
+            match error {
+                Error::InvalidResponse { message } => assert_eq!(
+                    message,
+                    "response message ID does not match the requested message ID"
+                ),
+                other => panic!("expected invalid response, got {other:?}"),
+            }
+        }
+
+        let server = MockServer::start().await;
+        let client = Client::test_client(server.uri());
+        let requested = MessageId::new("00042").unwrap();
+
+        let standard_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessage><dmDm><dmID>00043</dmID><dmSenderType>31</dmSenderType>
+              <dmFiles><dmFile dmMimeType="application/octet-stream" dmFileMetaType="main"
+                dmFileDescr="data.bin"><dmEncodedContent>AAEC/f7/</dmEncodedContent></dmFile></dmFiles>
+            </dmDm><dmHash>AAEC/f7/</dmHash><dmQTimestamp></dmQTimestamp>
+            <dmMessageStatus>6</dmMessageStatus></dmReturnedMessage>
+          </MessageDownloadResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dz"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_download::download_request(&requested).unwrap()).unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(standard_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let large_response = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+          <env:Body><BigMessageDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessage dmVODZ="true" attsNum="1"><dmDm><dmID>00043</dmID>
+              <dmSenderType>31</dmSenderType><dmFiles><dmFile dmMimeType="application/octet-stream"
+                dmFileMetaType="main" dmFileDescr="large.bin">
+                <dmEncodedContent>AAEC/f7/</dmEncodedContent></dmFile></dmFiles>
+            </dmDm><dmHash>AAEC/f7/</dmHash><dmQTimestamp></dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus></dmReturnedMessage>
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </BigMessageDownloadResponse></env:Body></env:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/vodz"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(
+                    large_message::large_message_download_request(&requested).unwrap(),
+                )
+                .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(large_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let envelope_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><MessageEnvelopeDownloadResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmReturnedMessageEnvelope dmVODZ="false"><dmDm>
+              <dmID>00043</dmID><dmSenderType>31</dmSenderType></dmDm>
+              <dmHash>AAEC/f7/</dmHash><dmQTimestamp>BAU=</dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus></dmReturnedMessageEnvelope>
+            <dmStatus><dmStatusCode>0000</dmStatusCode><dmStatusMessage>OK</dmStatusMessage></dmStatus>
+          </MessageEnvelopeDownloadResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dx"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_info::envelope_download_request(&requested).unwrap())
+                    .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(envelope_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let delivery_response = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><GetDeliveryInfoResponse xmlns="http://isds.czechpoint.cz/v20">
+            <dmDelivery><dmDm><dmID>00043</dmID><dmSenderType>31</dmSenderType></dmDm>
+              <dmHash>AAEC/f7/</dmHash><dmQTimestamp>BAU=</dmQTimestamp>
+              <dmMessageStatus>6</dmMessageStatus><dmEvents><dmEvent>
+                <dmEventDescr>Delivered</dmEventDescr></dmEvent></dmEvents>
+            </dmDelivery>
+          </GetDeliveryInfoResponse></soap:Body></soap:Envelope>"#;
+        Mock::given(method("POST"))
+            .and(path("/DS/dx"))
+            .and(wiremock::matchers::body_string(
+                String::from_utf8(message_info::delivery_info_request(&requested).unwrap())
+                    .unwrap(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(delivery_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_mismatch(
+            client
+                .download_message(&requested, Some(MessageMode::Standard))
+                .await
+                .unwrap_err(),
+        );
+        assert_mismatch(
+            client
+                .download_message(&requested, Some(MessageMode::Large))
+                .await
+                .unwrap_err(),
+        );
+        assert_mismatch(
+            client
+                .download_message_envelope(&requested)
+                .await
+                .unwrap_err(),
+        );
+        assert_mismatch(client.delivery_info(&requested).await.unwrap_err());
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn mark_downloaded_timeout_makes_exactly_one_request() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1524,7 +1693,12 @@ mod tests {
     fn credentials_and_client_debug_output_are_redacted() {
         let credentials = Credentials::new("test-user", "sentinel-password");
         let rendered = format!("{credentials:?}");
+        assert_eq!(
+            rendered,
+            r#"Credentials { username: "[REDACTED]", password: "[REDACTED]" }"#
+        );
         assert!(!rendered.contains("sentinel-password"));
+        assert!(!rendered.contains("test-user"));
 
         let client = Client::builder(Environment::Test)
             .credentials(credentials)

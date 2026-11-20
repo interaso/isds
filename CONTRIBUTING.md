@@ -37,4 +37,4 @@ The lifecycle sends real test messages and can trigger delivery behavior in the 
 
 ## Licensing
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under both MIT and Apache-2.0, without additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under the MIT License, without additional terms or conditions.

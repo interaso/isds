@@ -165,7 +165,7 @@ A safe consumer workflow is:
 
 Message IDs are opaque and not chronologically ordered. List offsets start at 1; the default explicit limit is 1000. Time filters apply to `dmDeliveryTime`, not submission or legal-acceptance timestamps. The crate performs no hidden auto-pagination.
 
-Messages in states 4 or 5 cannot yet be downloaded through `MessageDownload`; ISDS can return `1222`. Delivery processing can also return `3006` to a received-list call. Applications should implement bounded, operation-aware retry policies themselves.
+States 4 and 5 are represented by `MessageState::PlacedInRecipientBox` and `MessageState::DeliveredByFiction`, without requiring numeric comparisons. Messages in these states cannot yet be downloaded through `MessageDownload`; ISDS can return `1222`. Delivery processing can also return `3006` to a received-list call. Applications should implement bounded, operation-aware retry policies themselves.
 
 ## Message modes
 
@@ -199,7 +199,9 @@ Successful parsing, message download, and `GetDeliveryInfo` do **not** constitut
 
 `Error` distinguishes invalid input, transport failures, authentication failures, unexpected HTTP statuses, SOAP faults, ISDS service statuses, oversized responses, and invalid responses.
 
-ISDS status codes remain strings with leading zeroes. `ServiceError` exposes the code, message, and optional reference number. Databox lookup `0002` (no result) and `0003` (truncated result) are represented as ordinary `DataBoxSearchResult` outcomes rather than transport failures. Informational status `0009` sets `DataBoxSearchResult::postal_delivery_restricted` while preserving returned records.
+`ServiceError::kind` classifies `1222` as `ServiceErrorKind::MessageNotDownloadable` and `3006` as `ServiceErrorKind::DeliveryInProgress`; other statuses return `ServiceErrorKind::Other`. This allows retry decisions without comparing raw strings. The exact code remains a string with leading zeroes through `ServiceError::code`, which also preserves unknown and future statuses alongside the server message and optional reference number.
+
+Databox lookup `0002` (no result) and `0003` (truncated result) are represented as ordinary `DataBoxSearchResult` outcomes rather than transport failures. Informational status `0009` sets `DataBoxSearchResult::postal_delivery_restricted` while preserving returned records.
 
 ## Live tests against the official test environment
 

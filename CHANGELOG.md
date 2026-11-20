@@ -17,5 +17,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Structured transport, HTTP, SOAP, service-status, size-limit, and response-decoding errors.
 - Consumer examples, offline tests, and opt-in lifecycle tests for the official ISDS test environment.
 - Optional `tracing` instrumentation with privacy-safe request spans and response metadata.
+- Typed service-error classification for messages not yet downloadable and delivery still in progress.
 
 [Unreleased]: https://github.com/interaso/isds

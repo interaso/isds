@@ -8,7 +8,7 @@ mod model;
 mod wire;
 
 pub use client::{Client, ClientBuilder, Credentials, Environment};
-pub use error::{Error, Result, ServiceError};
+pub use error::{Error, Result, ServiceError, ServiceErrorKind};
 pub use model::{
     Attachment, AttachmentType, CreditEvent, CreditEventDetails, CreditInfo, CreditQuery, DataBox,
     DataBoxId, DataBoxSearchResult, DataBoxState, DataBoxType, DataVaultChange, DeliveryEvent,

@@ -8,7 +8,7 @@ Install a current stable Rust toolchain with `rustfmt` and Clippy. The crate use
 
 Run the same offline checks as CI before submitting a change:
 
-```text
+```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked

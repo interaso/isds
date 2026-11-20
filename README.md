@@ -1,5 +1,10 @@
 # isds
 
+[![CI](https://github.com/interaso/isds/actions/workflows/ci.yml/badge.svg)](https://github.com/interaso/isds/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/isds.svg)](https://crates.io/crates/isds)
+[![docs.rs](https://docs.rs/isds/badge.svg)](https://docs.rs/isds)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 A high-level asynchronous Rust client for Czech **ISDS / datové schránky**.
 
 The crate supports username/password authentication, ordinary and large-volume messages, databox lookup, and credit information. It uses the canonical `datovka.gov.cz` and `datovka-test.gov.cz` services and does not require `libdatovka` or another native library.
@@ -17,6 +22,14 @@ The crate supports username/password authentication, ordinary and large-volume m
 - Structured transport, HTTP, SOAP, ISDS-status, and decoding errors.
 - Redacted credentials and attachment content in debugging output.
 - Optional `serde` feature for serializing `MessageId` and `DataBoxId` as strings and validating them during deserialization.
+
+## Installation
+
+```text
+cargo add isds
+```
+
+The crate is pre-1.0, so API changes may occur between minor releases. Optional ID serialization is enabled with `cargo add isds --features serde`.
 
 ## Quick start
 
@@ -139,6 +152,8 @@ Automatic download performs two service requests. Forced standard or large downl
 
 `send_message` sums decoded attachment bytes. Totals up to and including 20 MiB use ordinary DZ by default; larger totals use VoDZ. Configure the boundary with `ClientBuilder::large_message_threshold_bytes` and the default 100 MiB decoded-attachment maximum with `ClientBuilder::max_attachment_bytes`. Messages above the configured maximum are rejected before any network request.
 
+The default total request timeout is 30 seconds. For large uploads on slow connections, set a longer timeout with `ClientBuilder::timeout`.
+
 For VoDZ, the client uploads attachments sequentially and verifies returned SHA-256, SHA-512, SHA3-256, or SHA3-512 hashes locally before `CreateBigMessage`. Unknown future hash algorithms remain usable and are checked by ISDS during creation. Unused uploads expire after approximately two hours according to the ISDS guide.
 
 All messages and downloads are fully buffered. Base64 increases their encoded size and memory usage. The default maximum response size is 256 MiB and is configurable with `ClientBuilder::max_response_bytes`. MTOM/XOP and streaming attachments are deferred.
@@ -174,14 +189,18 @@ The lifecycle sends fresh synthetic messages to both recipients and separately e
 ## Development checks
 
 ```text
-cargo fmt --check
-cargo check --examples
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo doc --no-deps
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo test --all-features --locked
+cargo check --examples --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps --locked
+cargo package --locked --allow-dirty
 ```
 
 Schema source URLs and SHA-256 hashes are recorded in [SCHEMAS.md](SCHEMAS.md). Runtime endpoints are selected independently because the official test-hosted WSDLs currently contain production `soap:address` values.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines, [CHANGELOG.md](CHANGELOG.md) for release history, and [RELEASING.md](RELEASING.md) for the manual publication process.
 
 ## Deferred capabilities
 
@@ -200,3 +219,14 @@ Schema source URLs and SHA-256 hashes are recorded in [SCHEMAS.md](SCHEMAS.md). 
 - [Developer notices](https://datovka.gov.cz/info/cs/2052.html)
 - [Test environment](https://datovka.gov.cz/info/cs/95.html)
 - [Static WSDL/XSD files](https://www.datovka.gov.cz/static/wsdl/v20/dm_operations.wsdl)
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under both MIT and Apache-2.0, without additional terms or conditions.

@@ -8,7 +8,7 @@ use roxmltree::Node;
 use crate::error::{Error, Result};
 use crate::model::{
     Attachment, AttachmentType, DataBoxId, MessageEnvelope, MessageHash, MessageId,
-    MessageMetadata, MessageState,
+    MessageMetadata, MessageMode, MessageState,
 };
 use crate::wire::soap::{self, ISDS_NS};
 
@@ -157,6 +157,20 @@ pub(crate) fn required_state(node: Node<'_, '_>) -> Result<MessageState> {
         "dmMessageStatus",
     )?;
     Ok(MessageState::from_code(code))
+}
+
+pub(crate) fn optional_message_mode(node: Node<'_, '_>) -> Result<Option<MessageMode>> {
+    let large = node
+        .attribute("dmVODZ")
+        .map(|value| soap::parse_bool(value, "dmVODZ"))
+        .transpose()?;
+    Ok(large.map(|large| {
+        if large {
+            MessageMode::Large
+        } else {
+            MessageMode::Standard
+        }
+    }))
 }
 
 pub(crate) fn optional_bool(node: Node<'_, '_>, name: &str) -> Result<Option<bool>> {

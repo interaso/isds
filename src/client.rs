@@ -337,7 +337,7 @@ impl Client {
             Some(MessageMode::Large) => self.download_large_message(id).await,
             None => {
                 let envelope = self.download_message_envelope(id).await?;
-                if envelope.is_large_message == Some(true) {
+                if envelope.mode == Some(MessageMode::Large) {
                     self.download_large_message(id).await
                 } else {
                     self.download_standard_message(id).await
@@ -1384,7 +1384,7 @@ mod tests {
             .await;
 
         let message = client.download_message(&id, None).await.unwrap();
-        assert_eq!(message.is_large_message, Some(true));
+        assert_eq!(message.mode, Some(MessageMode::Large));
         assert_eq!(message.attachments.len(), 1);
         let forced = client
             .download_message(&id, Some(MessageMode::Large))
@@ -1392,7 +1392,7 @@ mod tests {
             .unwrap();
         assert_eq!(forced.envelope.id, id);
         let envelope = client.download_message_envelope(&id).await.unwrap();
-        assert_eq!(envelope.is_large_message, Some(true));
+        assert_eq!(envelope.mode, Some(MessageMode::Large));
         assert_eq!(envelope.attachment_count, Some(1));
         server.verify().await;
     }

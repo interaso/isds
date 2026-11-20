@@ -75,7 +75,13 @@ async fn example() -> isds::Result<()> {
 
 ## Examples
 
-The [`examples`](examples/) directory contains compile-checked consumer examples. Network-enabled examples read credentials from `ISDS_EXAMPLE_USERNAME` and `ISDS_EXAMPLE_PASSWORD`; use your shell or secret manager and never commit their values. They default to `Environment::Test`. Set `ISDS_EXAMPLE_ENVIRONMENT=production` only for intentional production use.
+The [`examples`](examples/) directory contains compile-checked consumer examples. Network-enabled examples use these environment variables; supply credentials through your shell or secret manager and never commit their values.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `ISDS_EXAMPLE_USERNAME` | For network examples | ISDS account username |
+| `ISDS_EXAMPLE_PASSWORD` | For network examples | ISDS account password |
+| `ISDS_EXAMPLE_ENVIRONMENT` | No | `test` by default; set to `production` only for intentional production use |
 
 | Example | Demonstrates | Command |
 | --- | --- | --- |
@@ -197,13 +203,20 @@ ISDS status codes remain strings with leading zeroes. `ServiceError` exposes the
 
 ## Live tests against the official test environment
 
-Default tests are offline. Live tests are both `#[ignore]`d and gated by `ISDS_RUN_LIVE_TESTS=1`. Their endpoint is hardcoded to `Environment::Test`.
+Default tests are offline. Live tests are `#[ignore]`d, and their endpoint is hardcoded to `Environment::Test`. Set all of these variables through your shell or secret manager; do not commit their values.
 
-Set these variables through your shell or secret manager; do not commit them:
-
-- `ISDS_TEST_SENDER_USERNAME`, `ISDS_TEST_SENDER_PASSWORD`, `ISDS_TEST_SENDER_BOX_ID`
-- `ISDS_TEST_RECIPIENT1_USERNAME`, `ISDS_TEST_RECIPIENT1_PASSWORD`, `ISDS_TEST_RECIPIENT1_BOX_ID`
-- `ISDS_TEST_RECIPIENT2_USERNAME`, `ISDS_TEST_RECIPIENT2_PASSWORD`, `ISDS_TEST_RECIPIENT2_BOX_ID`
+| Variable | Purpose |
+| --- | --- |
+| `ISDS_RUN_LIVE_TESTS` | Explicit opt-in; must be exactly `1` |
+| `ISDS_TEST_SENDER_USERNAME` | Sender account username |
+| `ISDS_TEST_SENDER_PASSWORD` | Sender account password |
+| `ISDS_TEST_SENDER_BOX_ID` | Sender databox ID |
+| `ISDS_TEST_RECIPIENT1_USERNAME` | First recipient account username |
+| `ISDS_TEST_RECIPIENT1_PASSWORD` | First recipient account password |
+| `ISDS_TEST_RECIPIENT1_BOX_ID` | First recipient databox ID |
+| `ISDS_TEST_RECIPIENT2_USERNAME` | Second recipient account username |
+| `ISDS_TEST_RECIPIENT2_PASSWORD` | Second recipient account password |
+| `ISDS_TEST_RECIPIENT2_BOX_ID` | Second recipient databox ID |
 
 Run the lifecycle serially:
 

@@ -222,6 +222,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines, [CHANGELOG.md
 
 ## License
 
-Licensed under the MIT License ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>).
+Licensed under the MIT License ([LICENSE](./LICENSE) or <https://opensource.org/licenses/MIT>).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under the MIT License, without additional terms or conditions.

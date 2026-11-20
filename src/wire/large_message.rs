@@ -283,6 +283,38 @@ mod tests {
     }
 
     #[test]
+    fn supported_hash_algorithms_match_known_vectors() {
+        let vectors = [
+            (
+                "SHA-256",
+                "3f2d1552cdc7483f40dd720c80b900225dfecfd5cae7cd168d79ab6ee5959885",
+            ),
+            (
+                "SHA-512",
+                "4ec50e5ea740bfc2c574d402a6c076c325eb0945c754a651a71f339e0f154c8880eb5f68f42f3606e0213b080d0115a76ecf3d383e0bbe87e15946f075d5ce2e",
+            ),
+            (
+                "SHA3-256",
+                "6b16378d8f97e4084b5f780e94ffcdf3277662087722074bb1588600213fbacd",
+            ),
+            (
+                "SHA3-512",
+                "499a7b491d60fef6c7df9ece4da9b6bac82f88e00bc3fc3601508d44c29052fa8a4b085bb88230e05f20bcc7f479a84f540d298dcd5315a7925861ed45f0c9d8",
+            ),
+        ];
+        for (algorithm, value) in vectors {
+            verify_hash(
+                &attachment(),
+                &AttachmentHash {
+                    value: value.to_owned(),
+                    algorithm: algorithm.to_owned(),
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn large_download_reuses_inline_attachment_decoding_and_preserves_metadata() {
         let message = soap::decode(
             LARGE_DOWNLOAD_RESPONSE.as_bytes(),

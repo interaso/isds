@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated `sha2` to 0.11 and `sha3` to 0.12; supported attachment hashes retain their existing behavior.
+
 ### Fixed
 
 - Removed the redundant package homepage metadata that caused a Cargo warning.

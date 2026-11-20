@@ -33,9 +33,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
           test "$RELEASE_TAG" = "v$version"
-          grep -Fq -- "## [$version] - " CHANGELOG.md
+          awk -v prefix="## [$version] - " 'index($0, prefix) == 1 && substr($0, length(prefix) + 1) ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ { found = 1 } END { exit !found }' CHANGELOG.md
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint all targets and features

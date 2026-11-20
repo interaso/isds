@@ -1,15 +1,14 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 env:
@@ -17,41 +16,33 @@ env:
 
 jobs:
   release:
-    name: Verify and publish release
+    name: Verify and publish crate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check out tagged revision
+      - name: Check out release tag
         uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Validate tag and release notes
-        id: release
+      - name: Validate release metadata
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+          if [[ "$RELEASE_TAG" != "v$version" ]]; then
+            echo "::error::Release tag $RELEASE_TAG does not match Cargo.toml version $version"
             exit 1
           fi
-          notes="$RUNNER_TEMP/release-notes.md"
-          awk -v version="$version" '
-            /^## \[/ {
-              if (found) exit
-              found = index($0, "## [" version "] - ") == 1
-              next
-            }
-            found { print }
-          ' CHANGELOG.md > "$notes"
-          if ! grep -q '[^[:space:]]' "$notes"; then
-            echo "::error::CHANGELOG.md has no release notes for $version"
+          if ! grep -Fq -- "## [$version] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated section for $version"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint all targets and features
@@ -74,11 +65,3 @@ jobs:
         run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Create GitHub release
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          --title "isds ${{ steps.release.outputs.version }}"
-          --notes-file "$RUNNER_TEMP/release-notes.md"
-          --verify-tag
-        env:
-          GH_TOKEN: ${{ github.token }}

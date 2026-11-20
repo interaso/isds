@@ -3,7 +3,7 @@
 [![CI](https://github.com/interaso/isds/actions/workflows/ci.yml/badge.svg)](https://github.com/interaso/isds/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/isds.svg)](https://crates.io/crates/isds)
 [![docs.rs](https://docs.rs/isds/badge.svg)](https://docs.rs/isds)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
 A high-level asynchronous Rust client for Czech **ISDS / datové schránky**.
 
@@ -222,11 +222,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines, [CHANGELOG.md
 
 ## License
 
-Licensed under either of
+Licensed under the MIT License ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>).
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
-
-at your option.
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under both MIT and Apache-2.0, without additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate is licensed under the MIT License, without additional terms or conditions.

@@ -39,14 +39,14 @@ The lifecycle sends real test messages and can trigger delivery behavior in the 
 
 Record consumer-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md), using categories such as Added, Changed, Fixed, and Removed as appropriate. Do not assign a version or date until the release is being prepared.
 
-Releases are maintainer-only and use the [tag-triggered release workflow](.github/workflows/release.yml):
+Releases are maintainer-only and use the [published-release workflow](.github/workflows/release.yml):
 
 1. Start from a reviewed `main` branch with passing CI. When protocol behavior or wire dependencies changed, run the official test-environment lifecycle manually.
 2. Update the version in `Cargo.toml` and the dependency examples in `README.md`.
 3. Move the relevant `Unreleased` changelog entries into a `## [X.Y.Z] - YYYY-MM-DD` section, retain an empty `Unreleased` section for future changes, and update the changelog comparison and release links.
-4. Commit and review these changes, then create and push a `vX.Y.Z` tag exactly matching the package version. crates.io releases are immutable, so do not tag until the release is ready.
-5. The workflow validates the tag and changelog, runs the full offline verification matrix and publication dry-run, publishes to crates.io, and creates a GitHub release from the version's changelog section. It never runs live tests.
-6. Verify the published crates.io page, docs.rs build, GitHub release notes, and rendered documentation links.
+4. Commit and review these changes. Prepare a GitHub release from the release commit with a new or existing `vX.Y.Z` tag exactly matching the package version, and use the dated changelog section for its notes. Drafts can be reviewed before publication. crates.io releases are immutable, so publish the GitHub release only when ready.
+5. Publishing the GitHub release triggers the workflow. It checks out the release tag, validates the tag and dated changelog section, runs the full offline verification matrix and publication dry-run, and publishes only to crates.io. It never creates or modifies the GitHub release and never runs live tests.
+6. Verify the published crates.io page, docs.rs build, GitHub release notes, and rendered documentation links. If crate publication fails, the existing GitHub release remains in place while the workflow is fixed or rerun.
 
 The GitHub repository must have a suitably scoped `CARGO_REGISTRY_TOKEN` Actions secret with permission to publish the crate. Keep release credentials in the repository's secret store, never in workflow files or other committed content.
 

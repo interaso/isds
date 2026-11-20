@@ -3,7 +3,13 @@ name = "isds"
 version = "0.1.0"
 edition = "2024"
 description = "Async high-level client for Czech ISDS data boxes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/interaso/isds"
+homepage = "https://github.com/interaso/isds"
+documentation = "https://docs.rs/isds"
 readme = "README.md"
+keywords = ["isds", "databox", "czech", "soap"]
+categories = ["api-bindings"]
 
 [features]
 default = []
@@ -31,6 +37,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "time"] }
 uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints.rust]
 missing_docs = "warn"

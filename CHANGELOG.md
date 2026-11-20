@@ -8,12 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Optional `tracing` instrumentation with privacy-safe request spans and response metadata.
-
-## [0.1.0] - 2026-11-20
-
-### Added
-
 - Asynchronous, cheaply cloneable client with explicit test or production environment selection.
 - Username/password authentication over TLS using `reqwest` and rustls, without native dependencies.
 - Databox state checks, exact and criteria-based lookup, owner information, current credit, and credit history.
@@ -22,6 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Validated message and databox identifiers, descriptive databox types, and optional serde support for identifiers.
 - Structured transport, HTTP, SOAP, service-status, size-limit, and response-decoding errors.
 - Consumer examples, offline tests, and opt-in lifecycle tests for the official ISDS test environment.
+- Optional `tracing` instrumentation with privacy-safe request spans and response metadata.
 
-[Unreleased]: https://github.com/interaso/isds/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/interaso/isds/releases/tag/v0.1.0
+[Unreleased]: https://github.com/interaso/isds

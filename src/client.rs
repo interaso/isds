@@ -411,6 +411,21 @@ impl Client {
         .await
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "isds.request",
+            level = "debug",
+            skip_all,
+            fields(
+                operation = response_operation
+                    .strip_suffix("Response")
+                    .unwrap_or(response_operation),
+                endpoint = service.path(),
+                environment = ?self.inner.environment,
+            )
+        )
+    )]
     pub(crate) async fn execute<T>(
         &self,
         service: Service,
@@ -444,10 +459,30 @@ impl Client {
         if service.expect_continue() {
             http_request = http_request.header(EXPECT, "100-continue");
         }
-        let response = http_request.send().await?;
+        let response = match http_request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("ISDS transport request failed");
+                return Err(error.into());
+            }
+        };
 
         let status = response.status();
-        let body = read_bounded(response, self.inner.max_response_bytes).await?;
+        let body = match read_bounded(response, self.inner.max_response_bytes).await {
+            Ok(body) => body,
+            Err(error) => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("ISDS response body could not be read");
+                return Err(error);
+            }
+        };
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            http_status = status.as_u16(),
+            response_bytes = body.len(),
+            "ISDS response received"
+        );
 
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(Error::Authentication {
@@ -701,6 +736,31 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "tracing")]
+    #[derive(Clone, Default)]
+    struct TraceBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    #[cfg(feature = "tracing")]
+    impl std::io::Write for TraceBuffer {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TraceBuffer {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
     fn response_body(state: &str, code: &str, message: &str) -> String {
         format!(
             r#"<?xml version="1.0"?>
@@ -763,6 +823,49 @@ mod tests {
             .unwrap();
         assert!(state.is_active());
         server.verify().await;
+    }
+
+    #[cfg(feature = "tracing")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn tracing_emits_request_metadata_without_sensitive_content() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/DS/df"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(response_body("1", "0000", "OK")),
+            )
+            .mount(&server)
+            .await;
+
+        let buffer = TraceBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(buffer.clone())
+            .with_env_filter("isds=debug")
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+        tracing::callsite::rebuild_interest_cache();
+
+        Client::test_client(server.uri())
+            .check_data_box(&id())
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("isds.request"), "{output}");
+        assert!(output.contains("CheckDataBox"), "{output}");
+        assert!(output.contains("/DS/df"), "{output}");
+        assert!(output.contains("http_status=200"), "{output}");
+        assert!(output.contains("response_bytes="), "{output}");
+        for sensitive in [
+            "test-user",
+            "sentinel-password",
+            "egtk37z",
+            "<soap:Envelope",
+        ] {
+            assert!(!output.contains(sensitive), "{output}");
+        }
     }
 
     #[tokio::test]

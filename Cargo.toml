@@ -14,6 +14,7 @@ categories = ["api-bindings"]
 [features]
 default = []
 serde = ["dep:serde"]
+tracing = ["dep:tracing"]
 
 [dependencies]
 base64 = "0.23"
@@ -31,10 +32,12 @@ sha2 = "0.10"
 sha3 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt"] }
+tracing = { version = "0.1", optional = true, default-features = false, features = ["attributes", "std"] }
 
 [dev-dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "time"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"
 

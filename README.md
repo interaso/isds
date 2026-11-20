@@ -22,6 +22,7 @@ The crate supports username/password authentication, ordinary and large-volume m
 - Structured transport, HTTP, SOAP, ISDS-status, and decoding errors.
 - Redacted credentials and attachment content in debugging output.
 - Optional `serde` feature for serializing `MessageId` and `DataBoxId` as strings and validating them during deserialization.
+- Optional `tracing` feature for privacy-safe request spans and response metadata.
 
 ## Installation
 
@@ -96,6 +97,32 @@ isds = { version = "0.1.0", features = ["serde"] }
 ```
 
 `MessageId` and `DataBoxId` serialize as strings. Deserialization calls the same validators as their `new` constructors, including the databox Luhn32 check, so invalid IDs cannot be constructed through serde. The feature is disabled by default and does not add serde implementations to unrelated models.
+
+## Optional tracing
+
+Enable the `tracing` feature to instrument HTTP operations. The application configures its own subscriber and filters; the crate never installs a global subscriber.
+
+```toml
+[dependencies]
+isds = { version = "0.1.0", features = ["tracing"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+```
+
+This example honors `RUST_LOG` and otherwise enables debug instrumentation only for `isds`:
+
+```no_run
+use tracing_subscriber::EnvFilter;
+
+fn main() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("isds=debug"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+```
+
+Each HTTP request has a debug-level `isds.request` span containing the ISDS operation name, fixed service endpoint, and environment. After the response body is read, a debug event records its HTTP status and buffered byte count. Request-transport and response-reading failures also emit debug events. Use `RUST_LOG=isds=debug` to enable these records or a more restrictive filter to silence them.
+
+Credentials, authorization headers, databox and message IDs, XML bodies, and attachment contents are never included at any level. Disabling the default-off feature removes this crate's instrumentation and direct `tracing` dependency; `reqwest` retains its own independent tracing support.
 
 ## Supported operations
 

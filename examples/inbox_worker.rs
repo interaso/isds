@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::future::Future;
 
-use isds::{Client, Error as IsdsError, Message, MessageListQuery, MessageState};
+use isds::{Client, Error as IsdsError, Message, MessageListQuery, MessageState, ServiceErrorKind};
 
 /// Processes one page for a caller that intentionally accepts delivery-by-login.
 ///
@@ -32,7 +32,9 @@ where
     for record in page.records {
         let message = match client.download_message(&record.envelope.id, None).await {
             Ok(message) => message,
-            Err(IsdsError::Service(error)) if error.code() == "1222" => {
+            Err(IsdsError::Service(error))
+                if error.kind() == ServiceErrorKind::MessageNotDownloadable =>
+            {
                 // Still being processed; do not repeat any message creation.
                 continue;
             }

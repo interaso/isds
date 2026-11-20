@@ -10,7 +10,9 @@ use crate::model::DataBoxId;
 
 /// An opaque ISDS message identifier.
 ///
-/// Message IDs are not ordered and must not be treated as integers. With the
+/// Message IDs have no protocol-defined chronological order and must not be
+/// treated as integers. `Ord` is deterministic lexicographic ordering for
+/// container use only; it never represents chronology or pagination. With the
 /// `serde` feature, this serializes as a string and deserialization performs the
 /// same validation as [`MessageId::new`].
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]

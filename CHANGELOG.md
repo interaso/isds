@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-20
+
 ### Added
 
 - Asynchronous, cheaply cloneable client with explicit test or production environment selection.
@@ -33,4 +35,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Switched inbox retry handling and live-test polling to typed service-error kinds.
 - Documented returned-message ID validation and corrected native-build and dependency-logging guidance.
 
-[Unreleased]: https://github.com/interaso/isds
+[Unreleased]: https://github.com/interaso/isds/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/interaso/isds/releases/tag/v0.1.0

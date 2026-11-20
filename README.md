@@ -231,7 +231,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [CHANGELOG
 
 ## Releases
 
-Releases are triggered by pushing a `vX.Y.Z` tag matching the version in `Cargo.toml`. Update the version, README dependency examples, and changelog before tagging. The [release workflow](.github/workflows/release.yml) runs the full offline verification matrix, publishes to crates.io with a suitably scoped `CARGO_REGISTRY_TOKEN` Actions secret, and creates a GitHub release from the matching changelog section. Live tests remain manual and never run in the workflow.
+Releases are triggered by pushing a `vX.Y.Z` tag matching the version in `Cargo.toml`. Before tagging, update the version and README dependency examples, and move the relevant `Unreleased` entries into a dated changelog section for that version. The [release workflow](.github/workflows/release.yml) runs the full offline verification matrix, publishes to crates.io with a suitably scoped `CARGO_REGISTRY_TOKEN` Actions secret, and creates a GitHub release from the matching changelog section. Live tests remain manual and never run in the workflow.
 
 ## Deferred capabilities
 
